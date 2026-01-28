@@ -1,0 +1,8 @@
+build/
+install/
+log/
+*MUJOCO_LOG.TXT
+*_solved.py
+*_solved.cpp
+*_solved.h
+*_solved.hpp

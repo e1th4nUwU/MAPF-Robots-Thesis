@@ -1,0 +1,183 @@
+<?xml version="1.0"?>
+
+<robot name="justina_upper" xmlns:xacro="http://www.ros.org/wiki/xacro">
+  
+  <xacro:property name="torso_radius" value="0.03"/>       
+  <xacro:property name="torso_height" value="0.7"/>
+  <xacro:property name="torso_mass" value="1.0"/>
+  <xacro:property name="torso_inertia_x" value="${1.0/12.0 * torso_mass * (3*torso_radius*torso_radius + torso_height*torso_height)}"/>
+  <xacro:property name="torso_inertia_y" value="${1.0/12.0 * torso_mass * (3*torso_radius*torso_radius + torso_height*torso_height)}"/>
+  <xacro:property name="torso_inertia_z" value="${1.0/2.0 * torso_mass * torso_radius * torso_radius}"/>
+  
+  <!-- Left Wheel -->
+  <link name="torso_link">
+    <visual>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+      <geometry>
+        <cylinder radius="${torso_radius}" length="${torso_height}"/>
+      </geometry>
+      <material name="torso_material">
+        <color rgba="0.05 0.2 0.95 1.0"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+      <geometry>
+        <cylinder radius="${torso_radius}" length="${torso_height}"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="${torso_mass}"/>
+      <inertia ixx="${torso_inertia_x}" ixy="0.0" ixz="0.0" iyy="${torso_inertia_y}" iyz="0" izz="${torso_inertia_z}"/>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+    </inertial>
+  </link>
+
+  <joint name="torso_head1" type="fixed">
+    <origin xyz="0.0 0.0 0.34" rpy="0 0 0"/>
+    <parent link="torso_link"/>
+    <child link="head_link1"/>
+  </joint>
+
+  <link name="head_link1">
+    <visual>
+      <origin xyz= "-0.01 0 0.03" rpy="0 0 0"/>
+      <geometry><box size="0.06 0.04 0.04"/></geometry>
+      <material name="blue"/>
+    </visual>
+    <collision>
+      <origin xyz= "-0.01 0 0.03" rpy="0 0 0"/>
+      <geometry><box size="0.06 0.04 0.04"/></geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0.0 0 0.0" rpy = "0 0 0"/>
+      <mass value = "0.15" />
+      <inertia ixx = "0.00052" iyy = "0.00052" izz = "0.00004" ixy = "0" ixz = "0" iyz = "0" />
+    </inertial>
+  </link>
+
+  <joint name="head_pan" type="revolute">
+    <origin xyz="0.0 0 0.05" rpy="0 0 0" />
+    <parent link="head_link1"/>
+    <child link="head_link2"/>
+    <axis xyz="0 0 1" />
+    <dynamics damping ="0.1" />
+    <limit effort="6.0" velocity="3.0" lower="-3.14" upper="3.14"/>
+  </joint>
+  
+  <link name="head_link2">
+    <visual>
+      <origin xyz= "0.0 0 0.035" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.04 0.04 0.06"/>
+      </geometry>
+      <material name="orange"/>
+    </visual>
+    <collision>
+      <origin xyz= "0.0 0 0.035" rpy="0 0 0"/>
+      <geometry>
+        <box size = "0.04 0.04 0.06"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0.0 0 0.0" rpy = "0 0 0"/>
+      <mass value = "0.15" />
+      <inertia ixx = "0.00003125" iyy = "0.00003125" izz = "0.00003125" ixy = "0" ixz = "0" iyz = "0" />
+    </inertial>
+  </link>
+  
+  <joint name="head_tilt" type="revolute">
+    <origin xyz="0.0 0 0.08" rpy="0 -0.1 0" />
+    <parent link="head_link2"/>
+    <child link="realsense_link"/>
+    <axis xyz="0 1 0" />
+    <dynamics damping ="0.1" />
+    <limit effort="6.0" velocity="3.0" lower="-1.2" upper="1.0"/>
+  </joint>
+  
+  <link name="realsense_link">
+    <visual>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+      <geometry>
+        <box size="0.02 0.1 0.02"/>
+      </geometry>
+      <material name="camera_material">
+        <color rgba="0.05 0.05 0.05 1.0"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+      <geometry>
+        <box size="0.02 0.1 0.02"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="0.4"/>
+      <inertia ixx="0.001" ixy="0.0" ixz="0.0" iyy="0.001" iyz="0" izz="0.001"/>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+    </inertial>
+  </link>
+  
+  <gazebo reference="realsense_link">
+    <sensor name="camera" type="camera">
+      <always_on>true</always_on>
+      <visualize>true</visualize>
+      <update_rate>30</update_rate>
+      <topic>camera/image_raw</topic>
+      <gz_frame_id>camera_rgb_frame</gz_frame_id>
+      <camera name="intel_realsense_r200">
+        <camera_info_topic>camera/camera_info</camera_info_topic>
+        <image>
+          <width>1280</width>
+          <height>720</height>
+        </image>
+        <noise>
+          <type>gaussian</type>
+          <mean>0.0</mean>
+          <stddev>0.05</stddev>
+        </noise>
+      </camera>
+    </sensor>
+  </gazebo>
+
+  <!-- <!-\-HEAD TRANSMISSIONS-\-> -->
+  <!-- <transmission name="head_pan_transmission"> -->
+  <!--   <type>transmission_interface/SimpleTransmission</type> -->
+  <!--   <joint name="head_pan"> -->
+  <!--     <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface> -->
+  <!--   </joint> -->
+  <!--   <actuator name="head_pan_motor"> -->
+  <!--     <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface> -->
+  <!--     <mechanicalReduction>1</mechanicalReduction> -->
+  <!--   </actuator>       -->
+  <!-- </transmission> -->
+  <!-- <transmission name="head_tilt_transmission"> -->
+  <!--   <type>transmission_interface/SimpleTransmission</type> -->
+  <!--   <joint name="head_tilt"> -->
+  <!--     <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface> -->
+  <!--   </joint> -->
+  <!--   <actuator name="head_tilt_motor"> -->
+  <!--     <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface> -->
+  <!--     <mechanicalReduction>10</mechanicalReduction> -->
+  <!--   </actuator> -->
+  <!-- </transmission> -->
+
+  <ros2_control name="GazeboSimSystem" type="system">
+    <hardware>
+      <plugin>gz_ros2_control/GazeboSimSystem</plugin>
+    </hardware>
+  </ros2_control>
+  <ros2_control name="GazeboSimSystem" type="system">
+    <hardware>
+      <plugin>gz_ros2_control/GazeboSimSystem</plugin>
+    </hardware>
+    <joint name="head_pan"/>
+    <joint name="head_tilt"/>
+  </ros2_control>
+
+  <gazebo>
+    <plugin filename="gz_ros2_control-system" name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+      <parameters>$(find house_simul)/config/ros2control.yaml</parameters>
+    </plugin>
+  </gazebo>
+</robot>
