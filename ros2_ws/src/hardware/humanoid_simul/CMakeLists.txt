@@ -37,6 +37,11 @@ target_link_libraries(basic_mujoco mujoco glfw)
 #   "rclcpp"
 # )
 
+install (
+  DIRECTORY launch models
+  DESTINATION share/${PROJECT_NAME}
+)
+
 install(TARGETS humanoid_simul
   DESTINATION lib/${PROJECT_NAME})
 
