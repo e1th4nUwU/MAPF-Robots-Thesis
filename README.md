@@ -9,7 +9,7 @@ Software para el curso "Robots Móviles" de la Facultad de Ingeniería, UNAM, 20
 
 ## Instalación
 
-Nota: se asume que ya se tiene instalado Ubuntu y ROS.
+Nota: se asume que ya se tiene instalado Ubuntu, MuJoCo y ROS.
 
 * $ cd
 * $ git clone https://github.com/mnegretev/Mobile-Robots-2026-2/
