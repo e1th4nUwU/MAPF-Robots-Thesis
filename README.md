@@ -6,6 +6,7 @@ Software para el curso "Robots Móviles" de la Facultad de Ingeniería, UNAM, 20
 * Ubuntu 24.04: https://ubuntu.com/download/desktop/thank-you?version=24.04.3&architecture=amd64&lts=true
 * ROS Jazzy Jalisco: https://docs.ros.org/en/jazzy/Installation.html
 * Google DeepMind MuJoCo: https://mujoco.readthedocs.io/en/latest/programming/#building-from-source
+* Webots 2025a: https://github.com/cyberbotics/webots/releases/download/R2025a/webots_2025a_amd64.deb
 
 ## Instalación
 
@@ -26,15 +27,15 @@ Nota: se asume que ya se tiene instalado Ubuntu, MuJoCo y ROS.
 
 Para probar que todo se instaló y compiló correctamente:
 
-* $ cd ~/Mobile-Robots-2026-1/ros2_ws
+* $ cd ~/Mobile-Robots-2026-2/ros2_ws
 * $ cb
 * $ ros2 launch house_simul house_simul.launch.py
   
 Y en otra terminal:
 
-* $ cd ~/Mobile-Robots-2026-1/ros2_ws
+* $ cd ~/Mobile-Robots-2026-2/ros2_ws
 * $ cb
-* $ ros2 launch motion_planning motion_planning.launch.py
+* $ ros2 launch motion_planning motion_planning_utils.launch.py
 
 Si todo se instaló y compiló correctamente, se debería ver un visualizador como el siguiente:
 ![rviz](https://github.com/mnegretev/Mobile-Robots-2026-2/blob/main/Media/rviz2.png)
