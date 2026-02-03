@@ -1,5 +1,5 @@
 #
-# MOBILE ROBOTS - FI-UNAM, 2026-1
+# MOBILE ROBOTS - FI-UNAM, 2026-2
 # RAPIDLY EXPLORING RANDOM TREES
 #
 # Instructions:
@@ -69,7 +69,10 @@ class RRTNode(Node):
         nearest_y = nearest_node.y + mag*(rnd_y - nearest_node.y)/dist
         return TreeNode(nearest_x, nearest_y, nearest_node)
     
-    def check_collision(self, n1, n2, grid_map):
+    def check_collision(self, n1, n2, grid_map, epsilon):
+        dist = math.sqrt((n1.x-n2.x)**2 + (n1.y-n2.y)**2)
+        if dist > epsilon:
+            return True
         n = 2*int(max(abs(n2.x-n1.x), abs(n2.y-n1.y))/grid_map.info.resolution)
         P = numpy.linspace([n1.x,n1.y], [n2.x,n2.y], n)
         for x,y in P:
@@ -88,9 +91,9 @@ class RRTNode(Node):
         # Goal node is also already created.
         # Return both, the tree and the path. You can follow these steps:
         #
-    
+        
         path = []
-        while goal_node.parent is not None:
+        while goal_node is not None:
             path.insert(0, [goal_node.x, goal_node.y])
             goal_node = goal_node.parent
         return tree, path
@@ -104,10 +107,10 @@ class RRTNode(Node):
         mrk.id = 0
         mrk.type   = Marker.LINE_LIST
         mrk.action = Marker.ADD
-        mrk.color.r = 0.3
-        mrk.color.g = 0.3
+        mrk.color.r = 178.0/255.0#0.3
+        mrk.color.g = 102.0/255.0#0.5
         mrk.color.b = 1.0
-        mrk.color.a = 0.7
+        mrk.color.a = 0.9
         mrk.scale.x = 0.03
         mrk.pose.orientation.w = 1.0
         S = [tree] #Stack to traverse tree
@@ -120,11 +123,11 @@ class RRTNode(Node):
         return mrk
 
     def get_inflated_map(self):
-        print("Trying to get inflated map...")
+        self.get_logger().info("Trying to get inflated map...")
         future = self.clt_inflated_map.call_async(GetMap.Request())
         rclpy.spin_until_future_complete(self, future)
         response = future.result()
-        print("Got inflated map.")
+        self.get_logger().info("Got inflated map.")
         return response.map
    
     def callback_rrt(self, req, resp):
@@ -132,7 +135,8 @@ class RRTNode(Node):
         [gx, gy] = [req.goal .pose.position.x, req.goal .pose.position.y]
         epsilon  = self.get_parameter('epsilon').get_parameter_value().double_value
         max_attempts = self.get_parameter('max_n').get_parameter_value().integer_value
-        print("Planning by RRT from ", [sx,sy], "to", [gx,gy],"with e=", epsilon, "and", max_attempts, "attempts.")
+        str_data = str([sx,sy]) + " to " + str([gx,gy]) +" with e=" + str(epsilon) +  " and " + str(max_attempts) + " attempts."
+        self.get_logger().info("Planning by RRT from " + str_data)
         
         start_time = self.get_clock().now()
         tree, path = self.rrt(sx, sy, gx, gy, self.grid_map, epsilon, max_attempts)
@@ -140,9 +144,9 @@ class RRTNode(Node):
         
         delta_ms = (end_time.nanoseconds - start_time.nanoseconds)/1e6
         if len(path) > 0:
-            print("Path planned after " + str(delta_ms) + " ms")
+            self.get_logger().info("Path planned after " + str(delta_ms) + " ms")
         else:
-            print("Cannot plan path from  " + str([sx, sy])+" to "+str([gx, gy]) + " :'(")
+            self.get_logger().info("Cannot plan path from  " + str([sx, sy])+" to "+str([gx, gy]) + " :'(")
         
         
         self.msg_tree = self.get_tree_marker(tree)
@@ -163,13 +167,13 @@ class RRTNode(Node):
         self.pub_tree.publish(self.msg_tree)
 
     def __init__(self):
-        print("INITIALIZING RRT NODE - ", NAME)
         super().__init__("rrt_node")
+        self.get_logger().info("INITIALIZING RRT NODE - " + NAME)
         self.clt_inflated_map = self.create_client(GetMap, '/get_inflated_map')
-        print("Waiting for inflated map service...")
+        self.get_logger().info("Waiting for inflated map service...")
         while not self.clt_inflated_map.wait_for_service(timeout_sec=1.0):
-            print('Waiting for inflated map service...')
-        print("Inflated map service is now available...")
+            self.get_logger().info('Waiting for inflated map service...')
+        self.get_logger().info("Inflated map service is now available...")
         self.grid_map = self.get_inflated_map()
         self.declare_parameter('epsilon', 1.0)
         self.declare_parameter('max_n', 100)

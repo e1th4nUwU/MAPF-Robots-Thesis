@@ -57,33 +57,5 @@ def generate_launch_description():
                     arguments=['map_server', 'amcl']
                 )
             ]
-        ),
-        Node(
-            package="path_planner",
-            executable="cost_map",
-            name='cost_map',
-            output='screen',
-            parameters=[{'inflation_radius':0.2}, {'cost_radius':0.5}]
-        ),
-        Node(
-            package="path_planner",
-            executable="a_star",
-            name='a_star',
-            output='screen',
-            parameters=[{'diagonals':True}]
-        ),
-        Node(
-            package="path_planner",
-            executable="path_smoothing",
-            name='path_smoothing',
-            output='screen',
-            parameters=[{'w1':0.95}, {'w2':0.05}]
-        ),
-        Node(
-            package="path_follower",
-            executable="pure_pursuit",
-            name='pure_pursuit',
-            output='screen',
-            parameters=[{'alpha':0.1}, {'beta':0.1}]
-        ),
+        )
     ])
