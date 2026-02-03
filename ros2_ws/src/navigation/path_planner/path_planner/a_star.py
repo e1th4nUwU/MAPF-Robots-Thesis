@@ -1,5 +1,5 @@
 #
-# MOBILE ROBOTS - FI-UNAM, 2026-1
+# MOBILE ROBOTS - FI-UNAM, 2026-2
 # PATH PLANNING BY A-STAR
 #
 # Instructions:
@@ -73,25 +73,25 @@ class AStarNode(Node):
         return path
 
     def get_maps(self):
-        print("Waiting for inflated map service...")
+        self.get_logger().info("Waiting for inflated map service...")
         while not self.clt_inflated_map.wait_for_service(timeout_sec=1.0):
-            print('Waiting for inflated map service...')
-        print("Inflated map service is now available...")
-        print("Waiting for cost map service...")
+            self.get_logger().info('Waiting for inflated map service...')
+        self.get_logger().info("Inflated map service is now available...")
+        self.get_logger().info("Waiting for cost map service...")
         while not self.clt_cost_map.wait_for_service(timeout_sec=1.0):
-            print('Waiting for cost map service...')
-        print("Cost map service is now available...")
+            self.get_logger().info('Waiting for cost map service...')
+        self.get_logger().info("Cost map service is now available...")
 
-        print("Trying to get inflated map...")
+        self.get_logger().info("Trying to get inflated map...")
         future = self.clt_inflated_map.call_async(GetMap.Request())
         rclpy.spin_until_future_complete(self, future)
         inflated_map = future.result().map
-        print("Got inflated map.")
-        print("Trying to get cost map...")
+        self.get_logger().info("Got inflated map.")
+        self.get_logger().info("Trying to get cost map...")
         future = self.clt_cost_map.call_async(GetMap.Request())
         rclpy.spin_until_future_complete(self, future)
         cost_map= future.result().map
-        print("Got cost map.")
+        self.get_logger().info("Got cost map.")
         return [inflated_map, cost_map]
 
     def get_path_msg(self, path, res, zx, zy):
@@ -113,16 +113,16 @@ class AStarNode(Node):
         inflated_grid = numpy.reshape(numpy.asarray(self.inflated_map.data), (info.height, info.width))
         cost_grid     = numpy.reshape(numpy.asarray(self.cost_map.data)    , (info.height, info.width))
         
-        print("Planning path by A* from " + str([sx, sy])+" to "+str([gx, gy]))
+        self.get_logger().info("Planning path by A* from " + str([sx, sy])+" to "+str([gx, gy]))
         start_time = self.get_clock().now()
         path = self.a_star(int((sy-zy)/res), int((sx-zx)/res), int((gy-zy)/res), int((gx-zx)/res),
                            inflated_grid, cost_grid, use_diagonals)
         end_time = self.get_clock().now()
         delta_ms = (end_time.nanoseconds - start_time.nanoseconds)/1e6
         if len(path) > 0:
-            print("Path planned after " + str(delta_ms) + " ms with " +  str(len(path)) + " points")
+            self.get_logger().info("Path planned after " + str(delta_ms) + " ms with " +  str(len(path)) + " points")
         else:
-            print("Cannot plan path from  " + str([sx, sy])+" to "+str([gx, gy]) + " :'(")
+            self.get_logger().info("Cannot plan path from  " + str([sx, sy])+" to "+str([gx, gy]) + " :'(")
 
         self.msg_path = self.get_path_msg(path, res, zx, zy)
         resp.plan = self.msg_path
@@ -132,8 +132,8 @@ class AStarNode(Node):
         self.pub_path.publish(self.msg_path)
             
     def __init__(self):
-        print("INITIALIZING RRT NODE - ", NAME)
-        super().__init__("rrt_node")
+        super().__init__("a_star_node")
+        self.get_logger().info("INITIALIZING A STAR NODE - " + NAME)
         self.clt_inflated_map = self.create_client(GetMap, '/get_inflated_map')
         self.clt_cost_map     = self.create_client(GetMap, '/get_cost_map')
         

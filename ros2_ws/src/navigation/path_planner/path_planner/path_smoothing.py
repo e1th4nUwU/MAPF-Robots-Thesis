@@ -1,5 +1,5 @@
 #
-# MOBILE ROBOTS - FI-UNAM, 2026-1
+# MOBILE ROBOTS - FI-UNAM, 2026-2
 # PATH SMOOTHING BY GRADIENT DESCEND
 #
 # Instructions:
@@ -17,10 +17,6 @@ NAME = "FULL NAME"
 
 class PathSmoothingNode(Node):
     def smooth_path(self, Q, w1, w2, max_steps):
-        P = numpy.copy(Q)
-        tol     = 0.00001                   
-        nabla   = numpy.full(Q.shape, float("inf"))
-        epsilon = 0.1                       
         #
         # TODO:
         # Write the code to smooth the path Q, using the gradient descend algorithm,
@@ -30,6 +26,10 @@ class PathSmoothingNode(Node):
         # The smoothed path must have the same shape.
         # Return the smoothed path.
         #
+        P = numpy.copy(Q)
+        tol     = 0.00001                   
+        nabla   = numpy.full(Q.shape, float("inf"))
+        epsilon = 0.1                       
         
         return P
 
@@ -37,13 +37,13 @@ class PathSmoothingNode(Node):
         w1  = self.get_parameter('w1').get_parameter_value().double_value
         w2  = self.get_parameter('w2').get_parameter_value().double_value
         steps  = self.get_parameter('steps').get_parameter_value().integer_value
-        print("Smoothing path with params:", [w1, w2, steps])
+        self.get_logger().info("Smoothing path with params: " + str([w1, w2, steps]))
         start_time = self.get_clock().now()
         Q = numpy.asarray([[p.pose.position.x, p.pose.position.y] for p in request.path.poses])
         P = self.smooth_path(Q, w1, w2, steps)
         end_time = self.get_clock().now()
         delta_ms = (end_time.nanoseconds - start_time.nanoseconds)/1e6
-        print("Path smoothed after " + str(delta_ms) + " ms")
+        self.get_logger().info("Path smoothed after " + str(delta_ms) + " ms")
         self.msg_smooth_path.header.frame_id = request.path.header.frame_id
         self.msg_smooth_path.header.stamp = self.get_clock().now().to_msg()
         self.msg_smooth_path.poses = []
@@ -57,8 +57,8 @@ class PathSmoothingNode(Node):
         return response
             
     def __init__(self):
-        print("INITIALIZING PATH SMOOTHING NODE - ", NAME)
         super().__init__("path_smoothing_node")
+        self.get_logger().info("INITIALIZING PATH SMOOTHING NODE - " + NAME)
         self.declare_parameter('w1', 0.9)
         self.declare_parameter('w2', 0.1)
         self.declare_parameter('steps', 10000)

@@ -81,7 +81,8 @@ bool RclComm::call_plan_path(double start_x, double start_y, double goal_x, doub
     std::cout << "JustinaGUI->Plan path service available. Trying to plan path..." << std::endl;
     auto result = this->_clt_plan_path->async_send_request(request);
     // Wait for the result.
-    bool success = rclcpp::spin_until_future_complete(this->_node, result) == rclcpp::FutureReturnCode::SUCCESS;
+    std::chrono::seconds timeout(5);
+    bool success = rclcpp::spin_until_future_complete(this->_node, result, timeout) == rclcpp::FutureReturnCode::SUCCESS;
     if (success)
     {
 	path = result.get()->plan;
