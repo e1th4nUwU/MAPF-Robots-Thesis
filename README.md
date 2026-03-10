@@ -1,57 +1,94 @@
-# Mobile-Robots-2026-2
-Software para el curso "Robots Móviles" de la Facultad de Ingeniería, UNAM, 2026-2
+# Colmena Robótica Colaborativa — Tesis de Licenciatura
 
-## Requerimientos
+Fork del repositorio del curso **"Robots Móviles 2026-2"** (https://github.com/mnegretev/Mobile-Robots-2026-2) de la Facultad de Ingeniería, UNAM,
+adaptado para el desarrollo de una tesis sobre **Multi-Agent Path Finding (MAPF) con robots terrestres**.
 
-* Ubuntu 24.04: https://ubuntu.com/download/desktop/thank-you?version=24.04.3&architecture=amd64&lts=true
-* ROS Jazzy Jalisco: https://docs.ros.org/en/jazzy/Installation.html
-* Google DeepMind MuJoCo: https://mujoco.readthedocs.io/en/latest/programming/#building-from-source
-* Webots 2025a: https://github.com/cyberbotics/webots/releases/download/R2025a/webots_2025a_amd64.deb
+## Descripción
+
+Este proyecto implementa una colmena robótica colaborativa con múltiples robots diferenciales
+en simulación (ROS 2 Jazzy + Gazebo Harmonic). Los robots deben coordinarse para desplazarse
+a zonas objetivo evitando colisiones entre ellos y con obstáculos del entorno.
+
+### Escenarios de prueba
+
+| Escenario | Descripción |
+|---|---|
+| `towers` | Torres cilíndricas — navegación en campo abierto con obstáculos |
+| `rocks`  | Rocas dispersas — simulación de terreno irregular |
+| `maze`   | Laberinto de dos corredores — conflictos MAPF en espacios estrechos |
+
+## Stack
+
+- **ROS 2** Jazzy Jalisco
+- **Gazebo** Harmonic (gz-sim 8)
+- **Ubuntu** 24.04
+
+## Requisitos
+
+- Ubuntu 24.04
+- ROS 2 Jazzy: https://docs.ros.org/en/jazzy/Installation.html
+- Gazebo Harmonic (incluido en ROS 2 Jazzy)
 
 ## Instalación
 
-Nota: se asume que ya se tiene instalado Ubuntu, MuJoCo y ROS.
+```bash
+git clone <url>
+cd Mobile-Robots-2026-2
+./Setup.sh
+cd ros2_ws
+colcon build
+source install/setup.bash
+```
 
-* $ cd
-* $ git clone https://github.com/mnegretev/Mobile-Robots-2026-2/
-* $ cd Mobile-Robots-2026-2
-* $ sudo apt update
-* $ sudo apt upgrade
-* $ ./Setup.sh
-* $ cd ros2_ws
-* $ echo "alias cb='colcon build && source install/local_setup.bash'" >> ~/.bashrc
-* $ source ~/.bashrc
-* $ cb
+## Uso
 
-## Pruebas
+### Lanzar un escenario
 
-Para probar que todo se instaló y compiló correctamente:
+```bash
+ros2 launch swarm_bringup scenario.launch.py scenario:=towers
+ros2 launch swarm_bringup scenario.launch.py scenario:=rocks
+ros2 launch swarm_bringup scenario.launch.py scenario:=maze
+```
 
-* $ cd ~/Mobile-Robots-2026-2/ros2_ws
-* $ cb
-* $ ros2 launch house_simul house_simul.launch.py
-  
-Y en otra terminal:
+### Control remoto + monitor
 
-* $ cd ~/Mobile-Robots-2026-2/ros2_ws
-* $ cb
-* $ ros2 launch motion_planning motion_planning_utils.launch.py
+```bash
+ros2 run swarm_bringup swarm_teleop_gui.py
+```
 
-Si todo se instaló y compiló correctamente, se debería ver un visualizador como el siguiente:
-![rviz](https://github.com/mnegretev/Mobile-Robots-2026-2/blob/main/Media/rviz2.png)
+Muestra posición (x, y, θ), velocidades (vx, ω) y heading en tiempo real de los 3 robots,
+con D-pad para control manual de cada uno.
 
-Un ambiente simulado como el siguiente:
-![gazebo](https://github.com/mnegretev/Mobile-Robots-2026-2/blob/main/Media/gz.png)
+## Estructura del repositorio
 
-Y una GUI como la siguiente:
-![GUIExample](https://github.com/mnegretev/Mobile-Robots-2026-2/blob/main/Media/gui.png)
+```
+ros2_ws/src/
+├── hardware/
+│   └── justina_description/   # URDF del robot diferencial Justina
+├── navigation/
+│   ├── motion_planning/        # Utilidades de planeación
+│   ├── navig_msgs/             # Mensajes ROS personalizados
+│   ├── path_follower/          # Seguidor de trayectorias (Pure Pursuit)
+│   └── path_planner/          # Planeador de rutas
+└── swarm_bringup/             # Paquete principal de la tesis
+    ├── launch/
+    │   ├── scenario.launch.py  # Lanza cualquiera de los 3 escenarios
+    │   └── swarm.launch.py     # 3 robots en mundo vacío (dev/debug)
+    └── scripts/
+        ├── swarm_teleop_gui.py # GUI de control + monitor
+        └── swarm_monitor.py    # Monitor de posiciones (consola)
+```
 
-## Contacto
-Dr. Marco Negrete<br>
-Profesor Titular A<br>
-Jefe del Departamento de Procesamiento de Señales<br>
-Facultad de Ingeniería, UNAM <br>
-marco.negrete@ingenieria.unam.edu<br>
-mnegretev.info<br>
-https://mnegretev.info<br>
+---
 
+## Créditos
+
+Este repositorio es un fork del trabajo del **Dr. Marco Negrete**:
+
+> Dr. Marco Negrete
+> Profesor Titular A — Jefe del Departamento de Procesamiento de Señales
+> Facultad de Ingeniería, UNAM
+> marco.negrete@ingenieria.unam.edu
+> https://mnegretev.info
+
+Repositorio original: https://github.com/mnegretev/Mobile-Robots-2026-2
