@@ -10,7 +10,9 @@ install(
 
 # Make Python scripts executable
 install(
-  PROGRAMS scripts/swarm_monitor.py
+  PROGRAMS
+    scripts/swarm_monitor.py
+    scripts/swarm_teleop_gui.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
