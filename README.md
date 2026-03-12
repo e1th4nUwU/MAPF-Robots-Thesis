@@ -26,18 +26,36 @@ a zonas objetivo evitando colisiones entre ellos y con obstáculos del entorno.
 ## Requisitos
 
 - Ubuntu 24.04
-- ROS 2 Jazzy: https://docs.ros.org/en/jazzy/Installation.html
-- Gazebo Harmonic (incluido en ROS 2 Jazzy)
+- Acceso a Internet y permisos de `sudo`
+- ROS 2 Jazzy y Gazebo Harmonic
 
 ## Instalación
 
 ```bash
+sudo apt update
+sudo apt install -y git
 git clone <url>
 cd Mobile-Robots-2026-2
+chmod +x Setup.sh
 ./Setup.sh
-cd ros2_ws
-colcon build
-source install/setup.bash
+source /opt/ros/jazzy/setup.bash
+source ros2_ws/install/setup.bash
+```
+
+`Setup.sh` está pensado para una instalación limpia de Ubuntu 24.04. El script:
+
+- configura el repositorio oficial de ROS 2 Jazzy
+- instala ROS 2 Desktop, Gazebo Harmonic y dependencias del proyecto
+- ejecuta `rosdep install` sobre `ros2_ws/src`
+- compila el workspace con `colcon build`
+
+Si `rosdep` ya estaba inicializado en la máquina, el script lo reutiliza.
+
+## Verificación rápida
+
+```bash
+ros2 pkg list | grep swarm_bringup
+ros2 launch swarm_bringup scenario.launch.py scenario:=towers
 ```
 
 ## Uso
