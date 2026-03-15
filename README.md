@@ -68,11 +68,26 @@ ros2 launch swarm_bringup scenario.launch.py scenario:=rocks
 ros2 launch swarm_bringup scenario.launch.py scenario:=maze
 ```
 
+El launch del escenario ahora también levanta:
+
+- stack de navegación (`map_server`, `amcl`, `cost_map`, `a_star`, `path_smoothing`, `pure_pursuit`)
+- GUI de teleoperación (`swarm_teleop_gui.py`)
+- RViz2 (opcional, por defecto activo) con mapa coherente al escenario seleccionado
+
+Para correr sin RViz:
+
+```bash
+ros2 launch swarm_bringup scenario.launch.py scenario:=towers use_rviz:=false
+```
+
 ### Control remoto + monitor
 
 ```bash
 ros2 run swarm_bringup swarm_teleop_gui.py
 ```
+
+Nota: este comando sigue disponible si quieres abrir la GUI manualmente, pero al lanzar
+un escenario ya se abre automáticamente.
 
 Muestra posición (x, y, θ), velocidades (vx, ω) y heading en tiempo real de los 3 robots,
 con D-pad para control manual de cada uno.
