@@ -30,6 +30,7 @@ import os
 import re
 import subprocess
 import tempfile
+import numpy as np
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -38,6 +39,7 @@ from launch.actions import (
     IncludeLaunchDescription,
     OpaqueFunction,
     GroupAction,
+    LogInfo,
 )
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
@@ -283,6 +285,156 @@ SCENARIO_GEOMETRY = {
 
 VALID_SCENARIOS = list(SCENARIO_GEOMETRY.keys())
 
+# ── Scenario map generation for map_server/RViz coherence ────────────────────
+
+MAP_RESOLUTION = 0.05
+MAP_FREE = 254
+MAP_OCC = 0
+
+
+def _world_to_grid(x, y, width, height, res=MAP_RESOLUTION):
+    col = int((x + ARENA_X) / res)
+    row = int((ARENA_Y - y) / res)
+    col = max(0, min(width - 1, col))
+    row = max(0, min(height - 1, row))
+    return row, col
+
+
+def _paint_rect(grid, cx, cy, lx, ly):
+    h, w = grid.shape
+    x0 = cx - lx / 2.0
+    x1 = cx + lx / 2.0
+    y0 = cy - ly / 2.0
+    y1 = cy + ly / 2.0
+    r0, c0 = _world_to_grid(x0, y1, w, h)
+    r1, c1 = _world_to_grid(x1, y0, w, h)
+    rmin, rmax = min(r0, r1), max(r0, r1)
+    cmin, cmax = min(c0, c1), max(c0, c1)
+    grid[rmin:rmax + 1, cmin:cmax + 1] = MAP_OCC
+
+
+def _paint_rotated_rect(grid, cx, cy, lx, ly, yaw):
+    h, w = grid.shape
+    half_x = lx / 2.0
+    half_y = ly / 2.0
+    radius = math.sqrt(half_x * half_x + half_y * half_y)
+    r0, c0 = _world_to_grid(cx - radius, cy + radius, w, h)
+    r1, c1 = _world_to_grid(cx + radius, cy - radius, w, h)
+    rmin, rmax = min(r0, r1), max(r0, r1)
+    cmin, cmax = min(c0, c1), max(c0, c1)
+    cos_y = math.cos(yaw)
+    sin_y = math.sin(yaw)
+    for row in range(rmin, rmax + 1):
+        y = ARENA_Y - (row + 0.5) * MAP_RESOLUTION
+        for col in range(cmin, cmax + 1):
+            x = -ARENA_X + (col + 0.5) * MAP_RESOLUTION
+            dx = x - cx
+            dy = y - cy
+            local_x = cos_y * dx + sin_y * dy
+            local_y = -sin_y * dx + cos_y * dy
+            if abs(local_x) <= half_x and abs(local_y) <= half_y:
+                grid[row, col] = MAP_OCC
+
+
+def _paint_circle(grid, cx, cy, radius):
+    h, w = grid.shape
+    r0, c0 = _world_to_grid(cx - radius, cy + radius, w, h)
+    r1, c1 = _world_to_grid(cx + radius, cy - radius, w, h)
+    rmin, rmax = min(r0, r1), max(r0, r1)
+    cmin, cmax = min(c0, c1), max(c0, c1)
+    rr = radius * radius
+    for row in range(rmin, rmax + 1):
+        y = ARENA_Y - (row + 0.5) * MAP_RESOLUTION
+        for col in range(cmin, cmax + 1):
+            x = -ARENA_X + (col + 0.5) * MAP_RESOLUTION
+            if (x - cx) * (x - cx) + (y - cy) * (y - cy) <= rr:
+                grid[row, col] = MAP_OCC
+
+
+def _paint_boundaries(grid):
+    span_x = ARENA_X * 2 + WALL_T
+    span_y = ARENA_Y * 2
+    _paint_rect(grid, 0.0, ARENA_Y, span_x, WALL_T)
+    _paint_rect(grid, 0.0, -ARENA_Y, span_x, WALL_T)
+    _paint_rect(grid, -ARENA_X, 0.0, WALL_T, span_y)
+    _paint_rect(grid, ARENA_X, 0.0, WALL_T, span_y)
+
+
+def _build_scenario_map_image(scenario):
+    width = int((ARENA_X * 2.0) / MAP_RESOLUTION)
+    height = int((ARENA_Y * 2.0) / MAP_RESOLUTION)
+    grid = np.full((height, width), MAP_FREE, dtype=np.uint8)
+    _paint_boundaries(grid)
+
+    if scenario == 'towers':
+        positions = [
+            (-4.0, -3.0), (-4.0, 0.0), (-4.0, 3.0),
+            (-1.0, -1.5), (-1.0, 1.5),
+            (2.0, -3.0), (2.0, 0.0), (2.0, 3.0),
+            (5.0, -1.5), (5.0, 1.5),
+        ]
+        for x, y in positions:
+            _paint_circle(grid, x, y, 0.28)
+
+    elif scenario == 'rocks':
+        spheres = [
+            (-6.5, 1.8, 0.42),
+            (-4.0, -3.0, 0.48),
+            (-0.5, 3.5, 0.52),
+            (2.5, -0.5, 0.38),
+            (5.0, 2.0, 0.56),
+            (3.5, 0.5, 0.42),
+            (-2.5, 1.0, 0.35),
+        ]
+        boxes = [
+            (-5.5, -1.5, 1.1, 0.7, 30),
+            (-4.5, 3.8, 1.6, 0.6, 15),
+            (-2.0, 0.5, 0.9, 1.3, 45),
+            (-1.5, -3.5, 1.1, 0.8, 70),
+            (1.0, 1.8, 1.4, 0.7, 20),
+            (2.0, -2.8, 1.0, 1.2, 55),
+            (4.5, 2.8, 1.3, 0.8, 10),
+            (5.5, -1.8, 1.1, 0.9, 80),
+            (6.5, 0.5, 0.9, 1.1, 35),
+        ]
+        for x, y, r in spheres:
+            _paint_circle(grid, x, y, r)
+        for x, y, lx, ly, yaw_deg in boxes:
+            _paint_rotated_rect(grid, x, y, lx, ly, math.radians(yaw_deg))
+
+    elif scenario == 'maze':
+        _paint_rect(grid, 0.0, 5.0, ARENA_X * 2.0, WALL_T)
+        _paint_rect(grid, 0.0, -5.0, ARENA_X * 2.0, WALL_T)
+        _paint_rect(grid, 0.0, 0.0, ARENA_X * 2.0, WALL_T)
+        _paint_rect(grid, 2.0, 1.75, WALL_T, 3.5)
+        _paint_rect(grid, -2.0, -1.75, WALL_T, 3.5)
+
+    return grid
+
+
+def _write_scenario_map_files(scenario):
+    grid = _build_scenario_map_image(scenario)
+    map_dir = tempfile.mkdtemp(prefix=f'map_{scenario}_')
+    pgm_path = os.path.join(map_dir, f'{scenario}.pgm')
+    yaml_path = os.path.join(map_dir, f'{scenario}.yaml')
+
+    with open(pgm_path, 'wb') as f:
+        f.write(f'P5\n{grid.shape[1]} {grid.shape[0]}\n255\n'.encode('ascii'))
+        f.write(grid.tobytes())
+
+    yaml_text = f"""image: {pgm_path}
+mode: trinary
+resolution: {MAP_RESOLUTION}
+origin: [{-ARENA_X}, {-ARENA_Y}, 0.0]
+negate: 0
+occupied_thresh: 0.65
+free_thresh: 0.196
+"""
+    with open(yaml_path, 'w', encoding='ascii') as f:
+        f.write(yaml_text)
+
+    return yaml_path
+
 # ── World / robot assembly ─────────────────────────────────────────────────────
 
 _GROUND_PLANE = """\
@@ -373,6 +525,7 @@ def _build_world(robots_sdf, scenario_xml):
 
 def launch_setup(context, *args, **kwargs):
     scenario = LaunchConfiguration('scenario').perform(context)
+    use_rviz = LaunchConfiguration('use_rviz')
     if scenario not in VALID_SCENARIOS:
         raise ValueError(
             f"Unknown scenario '{scenario}'. Valid: {VALID_SCENARIOS}"
@@ -397,6 +550,7 @@ def launch_setup(context, *args, **kwargs):
         robots_sdf.append(_robot_to_sdf(urdf, robot))
 
     world_path = _build_world(robots_sdf, SCENARIO_GEOMETRY[scenario]())
+    map_yaml_path = _write_scenario_map_files(scenario)
 
     gazebo = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -415,7 +569,45 @@ def launch_setup(context, *args, **kwargs):
         output='screen',
     )
 
-    nodes = [gazebo, clock_bridge]
+    planning = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution([
+                FindPackageShare('motion_planning'), 'launch', 'motion_planning.launch.py'
+            ])
+        ),
+        launch_arguments={
+            'map_yaml': map_yaml_path,
+            'use_rviz': use_rviz,
+        }.items(),
+    )
+
+    teleop_gui = Node(
+        package='swarm_bringup',
+        executable='swarm_teleop_gui.py',
+        name='swarm_teleop_gui',
+        output='screen',
+    )
+
+    viz_bridge = Node(
+        package='swarm_bringup',
+        executable='swarm_viz_bridge.py',
+        name='swarm_viz_bridge',
+        output='screen',
+        parameters=[
+            {'scenario': scenario},
+            {'use_sim_time': True},
+        ],
+    )
+
+    nodes = [
+        LogInfo(msg=f"Launching scenario: {scenario}"),
+        LogInfo(msg=f"Using generated map yaml: {map_yaml_path}"),
+        gazebo,
+        clock_bridge,
+        planning,
+        teleop_gui,
+        viz_bridge,
+    ]
 
     for robot, urdf in zip(robots, robots_urdf):
         name = robot['name']
@@ -426,6 +618,7 @@ def launch_setup(context, *args, **kwargs):
                 executable='robot_state_publisher',
                 parameters=[{
                     'robot_description': urdf,
+                    'publish_robot_description': True,
                     'use_sim_time': True,
                     'frame_prefix': f'{name}/',
                 }],
@@ -452,6 +645,11 @@ def generate_launch_description():
             'scenario',
             default_value='towers',
             description='Scenario: towers | rocks | maze',
+        ),
+        DeclareLaunchArgument(
+            'use_rviz',
+            default_value='true',
+            description='Launch RViz2 with the scenario-aligned occupancy map',
         ),
         OpaqueFunction(function=launch_setup),
     ])
