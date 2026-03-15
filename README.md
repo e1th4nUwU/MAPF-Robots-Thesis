@@ -1,21 +1,22 @@
-# Colmena Robótica Colaborativa — Tesis de Licenciatura
+# Collaborative Robotic Swarm — Bachelor's Thesis
 
-Fork del repositorio del curso **"Robots Móviles 2026-2"** (https://github.com/mnegretev/Mobile-Robots-2026-2) de la Facultad de Ingeniería, UNAM,
-adaptado para el desarrollo de una tesis sobre **Multi-Agent Path Finding (MAPF) con robots terrestres**.
+Fork of the **"Mobile Robots 2026-2"** course repository
+(https://github.com/mnegretev/Mobile-Robots-2026-2) from the School of Engineering, UNAM,
+adapted for a thesis project on **Multi-Agent Path Finding (MAPF) with ground robots**.
 
-## Descripción
+## Description
 
-Este proyecto implementa una colmena robótica colaborativa con múltiples robots diferenciales
-en simulación (ROS 2 Jazzy + Gazebo Harmonic). Los robots deben coordinarse para desplazarse
-a zonas objetivo evitando colisiones entre ellos y con obstáculos del entorno.
+This project implements a collaborative robotic swarm with multiple differential-drive robots
+in simulation (ROS 2 Jazzy + Gazebo Harmonic). Robots must coordinate to reach goal zones
+while avoiding collisions with both obstacles and other robots.
 
-### Escenarios de prueba
+### Test Scenarios
 
-| Escenario | Descripción |
+| Scenario | Description |
 |---|---|
-| `towers` | Torres cilíndricas — navegación en campo abierto con obstáculos |
-| `rocks`  | Rocas dispersas — simulación de terreno irregular |
-| `maze`   | Laberinto de dos corredores — conflictos MAPF en espacios estrechos |
+| `towers` | Cylindrical towers - open-field navigation with obstacles |
+| `rocks`  | Scattered rocks - irregular terrain simulation |
+| `maze`   | Two-corridor maze - MAPF conflicts in narrow spaces |
 
 ## Stack
 
@@ -23,13 +24,13 @@ a zonas objetivo evitando colisiones entre ellos y con obstáculos del entorno.
 - **Gazebo** Harmonic (gz-sim 8)
 - **Ubuntu** 24.04
 
-## Requisitos
+## Requirements
 
 - Ubuntu 24.04
-- Acceso a Internet y permisos de `sudo`
-- ROS 2 Jazzy y Gazebo Harmonic
+- Internet access and `sudo` permissions
+- ROS 2 Jazzy and Gazebo Harmonic
 
-## Instalación
+## Installation
 
 ```bash
 sudo apt update
@@ -42,25 +43,25 @@ source /opt/ros/jazzy/setup.bash
 source ros2_ws/install/setup.bash
 ```
 
-`Setup.sh` está pensado para una instalación limpia de Ubuntu 24.04. El script:
+`Setup.sh` is intended for a clean Ubuntu 24.04 setup. It:
 
-- configura el repositorio oficial de ROS 2 Jazzy
-- instala ROS 2 Desktop, Gazebo Harmonic y dependencias del proyecto
-- ejecuta `rosdep install` sobre `ros2_ws/src`
-- compila el workspace con `colcon build`
+- configures the official ROS 2 Jazzy repository
+- installs ROS 2 Desktop, Gazebo Harmonic, and project dependencies
+- runs `rosdep install` on `ros2_ws/src`
+- builds the workspace with `colcon build`
 
-Si `rosdep` ya estaba inicializado en la máquina, el script lo reutiliza.
+If `rosdep` was already initialized on your machine, the script reuses it.
 
-## Verificación rápida
+## Quick Verification
 
 ```bash
 ros2 pkg list | grep swarm_bringup
 ros2 launch swarm_bringup scenario.launch.py scenario:=towers
 ```
 
-## Uso
+## Usage
 
-### Lanzar un escenario
+### Launch a Scenario
 
 ```bash
 ros2 launch swarm_bringup scenario.launch.py scenario:=towers
@@ -68,60 +69,60 @@ ros2 launch swarm_bringup scenario.launch.py scenario:=rocks
 ros2 launch swarm_bringup scenario.launch.py scenario:=maze
 ```
 
-El launch del escenario ahora también levanta:
+The scenario launch also starts:
 
-- stack de navegación (`map_server`, `amcl`, `cost_map`, `a_star`, `path_smoothing`, `pure_pursuit`)
-- GUI de teleoperación (`swarm_teleop_gui.py`)
-- RViz2 (opcional, por defecto activo) con mapa coherente al escenario seleccionado
+- navigation stack (`map_server`, `cost_map`, `a_star`, `path_smoothing`, `pure_pursuit`)
+- teleoperation GUI (`swarm_teleop_gui.py`)
+- RViz2 (optional, enabled by default) with a map aligned to the selected scenario
 
-Para correr sin RViz:
+To run without RViz:
 
 ```bash
 ros2 launch swarm_bringup scenario.launch.py scenario:=towers use_rviz:=false
 ```
 
-### Control remoto + monitor
+### Remote Control + Monitoring
 
 ```bash
 ros2 run swarm_bringup swarm_teleop_gui.py
 ```
 
-Nota: este comando sigue disponible si quieres abrir la GUI manualmente, pero al lanzar
-un escenario ya se abre automáticamente.
+Note: this command is still available if you want to launch the GUI manually,
+but the scenario launch now starts it automatically.
 
-Muestra posición (x, y, θ), velocidades (vx, ω) y heading en tiempo real de los 3 robots,
-con D-pad para control manual de cada uno.
+The GUI shows real-time position `(x, y, theta)`, velocities `(vx, omega)`, and heading
+for all 3 robots, with a D-pad for manual control of each robot.
 
-## Estructura del repositorio
+## Repository Structure
 
 ```
 ros2_ws/src/
 ├── hardware/
-│   └── justina_description/   # URDF del robot diferencial Justina
+│   └── justina_description/   # Justina differential robot URDF
 ├── navigation/
-│   ├── motion_planning/        # Utilidades de planeación
-│   ├── navig_msgs/             # Mensajes ROS personalizados
-│   ├── path_follower/          # Seguidor de trayectorias (Pure Pursuit)
-│   └── path_planner/          # Planeador de rutas
-└── swarm_bringup/             # Paquete principal de la tesis
+│   ├── motion_planning/       # Motion-planning utilities
+│   ├── navig_msgs/            # Custom ROS messages/services
+│   ├── path_follower/         # Trajectory follower (Pure Pursuit)
+│   └── path_planner/          # Path planner
+└── swarm_bringup/             # Main thesis package
     ├── launch/
-    │   ├── scenario.launch.py  # Lanza cualquiera de los 3 escenarios
-    │   └── swarm.launch.py     # 3 robots en mundo vacío (dev/debug)
+    │   ├── scenario.launch.py # Launch any of the 3 scenarios
+    │   └── swarm.launch.py    # 3 robots in an empty world (dev/debug)
     └── scripts/
-        ├── swarm_teleop_gui.py # GUI de control + monitor
-        └── swarm_monitor.py    # Monitor de posiciones (consola)
+        ├── swarm_teleop_gui.py # Control + monitoring GUI
+        └── swarm_monitor.py    # Console monitor
 ```
 
 ---
 
-## Créditos
+## Credits
 
-Este repositorio es un fork del trabajo del **Dr. Marco Negrete**:
+This repository is a fork of work by **Dr. Marco Negrete**:
 
 > Dr. Marco Negrete
-> Profesor Titular A — Jefe del Departamento de Procesamiento de Señales
-> Facultad de Ingeniería, UNAM
+> Full Professor A - Head of the Signal Processing Department
+> School of Engineering, UNAM
 > marco.negrete@ingenieria.unam.edu
 > https://mnegretev.info
 
-Repositorio original: https://github.com/mnegretev/Mobile-Robots-2026-2
+Original repository: https://github.com/mnegretev/Mobile-Robots-2026-2
