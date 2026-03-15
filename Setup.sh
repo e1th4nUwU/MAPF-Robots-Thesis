@@ -78,7 +78,9 @@ fi
 rosdep update
 
 echo "[6/7] Installing package dependencies from ros2_ws/src..."
+set +u
 source /opt/ros/${ROS_DISTRO}/setup.bash
+set -u
 cd "${REPO_ROOT}/ros2_ws"
 rosdep install --from-paths src --ignore-src -r -y --rosdistro ${ROS_DISTRO}
 
