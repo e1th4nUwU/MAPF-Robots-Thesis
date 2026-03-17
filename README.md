@@ -71,7 +71,8 @@ ros2 launch swarm_bringup scenario.launch.py scenario:=maze
 
 The scenario launch also starts:
 
-- navigation stack (`map_server`, `cost_map`, `a_star`, `path_smoothing`, `pure_pursuit`)
+- **shared infrastructure**: `map_server`, `cost_map` (one instance for all robots)
+- **per-robot navigation stack**: `a_star`, `path_smoothing`, `pure_pursuit` — each robot runs its own independent instance under its namespace (`/alvin/`, `/teodoro/`, `/simon/`)
 - teleoperation GUI (`swarm_teleop_gui.py`)
 - RViz2 (optional, enabled by default) with a map aligned to the selected scenario
 
@@ -80,6 +81,32 @@ To run without RViz:
 ```bash
 ros2 launch swarm_bringup scenario.launch.py scenario:=towers use_rviz:=false
 ```
+
+### Send Navigation Goals
+
+Each robot has its own namespaced `goal_pose` topic. After launching a scenario:
+
+```bash
+ros2 topic pub --once /alvin/goal_pose geometry_msgs/msg/PoseStamped \
+  "{header: {frame_id: 'map'}, pose: {position: {x: 8.0, y: 1.5}}}"
+
+ros2 topic pub --once /teodoro/goal_pose geometry_msgs/msg/PoseStamped \
+  "{header: {frame_id: 'map'}, pose: {position: {x: 8.0, y: 0.0}}}"
+
+ros2 topic pub --once /simon/goal_pose geometry_msgs/msg/PoseStamped \
+  "{header: {frame_id: 'map'}, pose: {position: {x: 8.0, y: -1.5}}}"
+```
+
+RViz shows each robot's planned path in its color (red = alvin, green = teodoro, blue = simon).
+
+### Per-Robot Navigation Topics
+
+| Topic | Description |
+|---|---|
+| `/{robot}/goal_pose` | Send a navigation goal |
+| `/{robot}/path_planning/plan_path` | A* service |
+| `/{robot}/path_planning/path` | Planned path (visualized in RViz) |
+| `/{robot}/cmd_vel` | Velocity commands to Gazebo |
 
 ### Remote Control + Monitoring
 
@@ -99,14 +126,19 @@ for all 3 robots, with a D-pad for manual control of each robot.
 ros2_ws/src/
 ├── hardware/
 │   └── justina_description/   # Justina differential robot URDF
+│       └── urdf/justina_base.xacro  # odom_frame/base_frame args for namespaced TF
 ├── navigation/
-│   ├── motion_planning/       # Motion-planning utilities
+│   ├── motion_planning/       # Motion-planning launch files
+│   │   └── launch/
+│   │       ├── motion_planning.launch.py  # Shared infra: map_server + cost_map
+│   │       └── robot_nav.launch.py        # Per-robot: a_star + path_smoothing + pure_pursuit
 │   ├── navig_msgs/            # Custom ROS messages/services
 │   ├── path_follower/         # Trajectory follower (Pure Pursuit)
-│   └── path_planner/          # Path planner
+│   │   └── pure_pursuit.py    # robot_frame param for namespaced TF lookup
+│   └── path_planner/          # Path planners (A*, RRT, Potential Fields)
 └── swarm_bringup/             # Main thesis package
     ├── launch/
-    │   ├── scenario.launch.py # Launch any of the 3 scenarios
+    │   ├── scenario.launch.py # Launch any of the 3 scenarios + full nav stack
     │   └── swarm.launch.py    # 3 robots in an empty world (dev/debug)
     └── scripts/
         ├── swarm_teleop_gui.py # Control + monitoring GUI
