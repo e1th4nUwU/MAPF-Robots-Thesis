@@ -62,8 +62,8 @@ class PathSmoothingNode(Node):
         self.declare_parameter('w1', 0.9)
         self.declare_parameter('w2', 0.1)
         self.declare_parameter('steps', 10000)
-        self.srv_smooth_path = self.create_service(ProcessPath, '/path_planning/smooth_path', self.callback_smooth_path)
-        self.pub_smooth_path = self.create_publisher(Path, '/path_planning/smoothed_path', 10)
+        self.srv_smooth_path = self.create_service(ProcessPath, 'path_planning/smooth_path', self.callback_smooth_path)
+        self.pub_smooth_path = self.create_publisher(Path, 'path_planning/smoothed_path', 10)
         self.msg_smooth_path = Path()
             
 def main(args=None):

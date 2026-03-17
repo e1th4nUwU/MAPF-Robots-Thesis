@@ -544,6 +544,8 @@ def launch_setup(context, *args, **kwargs):
                 'body_color':    robot['color'],
                 'cmd_vel_topic': f'/{name}/cmd_vel',
                 'odom_topic':    f'/{name}/odom',
+                'odom_frame':    f'{name}/odom',
+                'base_frame':    f'{name}/base_link',
             },
         ).toxml()
         robots_urdf.append(urdf)
@@ -565,10 +567,15 @@ def launch_setup(context, *args, **kwargs):
         package='ros_gz_bridge',
         executable='parameter_bridge',
         name='clock_bridge',
-        arguments=['/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock'],
+        arguments=[
+            '/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock',
+            # Global TF from Gazebo (all robots in one topic)
+            '/tf@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V',
+        ],
         output='screen',
     )
 
+    # Shared infrastructure: map_server, cost_map, rviz (one instance)
     planning = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([
@@ -580,6 +587,19 @@ def launch_setup(context, *args, **kwargs):
             'use_rviz': use_rviz,
         }.items(),
     )
+
+    # Per-robot navigation: a_star + path_smoothing + pure_pursuit
+    robot_nav_nodes = [
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                PathJoinSubstitution([
+                    FindPackageShare('motion_planning'), 'launch', 'robot_nav.launch.py'
+                ])
+            ),
+            launch_arguments={'robot_name': robot['name']}.items(),
+        )
+        for robot in robots
+    ]
 
     teleop_gui = Node(
         package='swarm_bringup',
@@ -605,6 +625,7 @@ def launch_setup(context, *args, **kwargs):
         gazebo,
         clock_bridge,
         planning,
+        *robot_nav_nodes,
         teleop_gui,
         viz_bridge,
     ]
@@ -634,6 +655,18 @@ def launch_setup(context, *args, **kwargs):
                 f'/{name}/cmd_vel@geometry_msgs/msg/Twist]gz.msgs.Twist',
                 f'/{name}/odom@nav_msgs/msg/Odometry[gz.msgs.Odometry',
             ],
+        ))
+        # map → {name}/odom static TF
+        # Must match the robot's starting world position so A* plans from the
+        # correct location (Gazebo resets odom to (0,0,0) at the robot's spawn point)
+        nodes.append(Node(
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            name=f'map_to_odom_{name}',
+            output='screen',
+            arguments=[str(robot['x']), str(robot['y']), '0',
+                       '0', '0', '0', 'map', f'{name}/odom'],
+            parameters=[{'use_sim_time': True}],
         ))
 
     return nodes

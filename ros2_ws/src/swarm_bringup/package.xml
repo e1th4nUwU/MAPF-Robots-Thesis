@@ -17,11 +17,14 @@
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>justina_description</exec_depend>
+  <exec_depend>motion_planning</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
 
   <exec_depend>rclpy</exec_depend>
   <exec_depend>nav_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>rosgraph_msgs</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
   <exec_depend>python3-tk</exec_depend>
 
   <export>

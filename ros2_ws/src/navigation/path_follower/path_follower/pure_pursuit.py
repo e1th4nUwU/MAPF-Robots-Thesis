@@ -84,7 +84,8 @@ class PurePursuitNode(Node):
 
     def get_robot_pose(self):
         try:
-            t = self.tf_buffer.lookup_transform("map","base_link", rclpy.time.Time())
+            robot_frame = self.get_parameter('robot_frame').get_parameter_value().string_value
+            t = self.tf_buffer.lookup_transform("map", robot_frame, rclpy.time.Time())
             robot_x = t.transform.translation.x
             robot_y = t.transform.translation.y
             robot_pose = numpy.asarray([robot_x, robot_y])
@@ -118,11 +119,12 @@ class PurePursuitNode(Node):
         self.declare_parameter('alpha', 1.0)
         self.declare_parameter('beta',  1.0)
         self.declare_parameter('tol',  0.3)
-        self.clt_plan_path = self.create_client(GetPlan, '/path_planning/plan_path')
-        self.clt_smooth_path = self.create_client(ProcessPath, '/path_planning/smooth_path')
-        self.pub_cmd_vel = self.create_publisher(Twist, '/cmd_vel', 1)
-        self.pub_goal_reached = self.create_publisher(Bool, '/navigation/goal_reached', 1)
-        self.sub_goal_pose = self.create_subscription(PoseStamped, '/goal_pose', self.callback_goal_pose, 1)
+        self.declare_parameter('robot_frame', 'base_link')
+        self.clt_plan_path = self.create_client(GetPlan, 'path_planning/plan_path')
+        self.clt_smooth_path = self.create_client(ProcessPath, 'path_planning/smooth_path')
+        self.pub_cmd_vel = self.create_publisher(Twist, 'cmd_vel', 1)
+        self.pub_goal_reached = self.create_publisher(Bool, 'navigation/goal_reached', 1)
+        self.sub_goal_pose = self.create_subscription(PoseStamped, 'goal_pose', self.callback_goal_pose, 1)
 
     def spin(self):
         robot_pose_tf_ready = False
@@ -139,10 +141,11 @@ class PurePursuitNode(Node):
             self.get_logger().info("Smooth path service is available")
         else:
             self.get_logger().info("Smooth path service is not available")
+        robot_frame = self.get_parameter('robot_frame').get_parameter_value().string_value
         self.get_logger().info("Waiting for robot pose tf to be available")
         while rclpy.ok() and not robot_pose_tf_ready:
             try:
-                t = self.tf_buffer.lookup_transform("map","base_link", rclpy.time.Time())
+                t = self.tf_buffer.lookup_transform("map", robot_frame, rclpy.time.Time())
                 robot_pose_tf_ready = True
             except TransformException as ex:
                 robot_pose_tf_ready = False
