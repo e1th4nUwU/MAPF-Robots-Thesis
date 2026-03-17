@@ -13,6 +13,7 @@ install(
   PROGRAMS
     scripts/swarm_monitor.py
     scripts/swarm_teleop_gui.py
+    scripts/swarm_viz_bridge.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

@@ -24,6 +24,7 @@ def generate_launch_description():
             default_value='true',
             description='Launch RViz2'
         ),
+        # ── Shared infrastructure (one instance for all robots) ──────────────
         Node(
             package='rviz2',
             executable='rviz2',
@@ -36,16 +37,10 @@ def generate_launch_description():
             executable='map_server',
             name='map_server',
             output='screen',
-            parameters=[{'yaml_filename':map_config_file}, {'use_sim_time':True}]
+            parameters=[{'yaml_filename': map_config_file}, {'use_sim_time': True}]
         ),
-        Node(
-            package='tf2_ros',
-            executable='static_transform_publisher',
-            name='map_to_odom_fallback_tf',
-            output='screen',
-            arguments=['0', '0', '0', '0', '0', '0', 'map', 'odom'],
-            parameters=[{'use_sim_time': True}]
-        ),
+        # NOTE: map→odom TF is published per-robot in scenario.launch.py
+        # (each robot has its own map→{name}/odom static transform)
         TimerAction(
             period=3.0,
             actions=[
@@ -57,32 +52,15 @@ def generate_launch_description():
                 )
             ]
         ),
+        # cost_map exposes /get_inflated_map and /get_cost_map globally
+        # so all per-robot a_star nodes can share it
         Node(
-            package="path_planner",
-            executable="cost_map",
+            package='path_planner',
+            executable='cost_map',
             name='cost_map',
             output='screen',
-            parameters=[{'inflation_radius':0.2}, {'cost_radius':0.5}]
+            parameters=[{'inflation_radius': 0.2}, {'cost_radius': 0.5}]
         ),
-        Node(
-            package="path_planner",
-            executable="a_star",
-            name='a_star',
-            output='screen',
-            parameters=[{'diagonals':True}]
-        ),
-        Node(
-            package="path_planner",
-            executable="path_smoothing",
-            name='path_smoothing',
-            output='screen',
-            parameters=[{'w1':0.95}, {'w2':0.05}]
-        ),
-        Node(
-            package="path_follower",
-            executable="pure_pursuit",
-            name='pure_pursuit',
-            output='screen',
-            parameters=[{'alpha':0.1}, {'beta':0.1}]
-        ),
+        # ── Per-robot navigation is launched separately via robot_nav.launch.py
+        # Include it once per robot in scenario.launch.py (or test_one_robot).
     ])

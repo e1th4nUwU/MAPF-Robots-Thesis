@@ -46,6 +46,8 @@
     <xacro:arg name="body_color" default="0.05 0.05 0.95 1.0" />
     <xacro:arg name="cmd_vel_topic" default="/cmd_vel" />
     <xacro:arg name="odom_topic"    default="/odom" />
+    <xacro:arg name="odom_frame"    default="odom" />
+    <xacro:arg name="base_frame"    default="base_link" />
     <!-- Links -->
     <link name="base_link"/>
     <!-- Body Link -->
@@ -245,8 +247,8 @@
         <odom_publish_frequency>100</odom_publish_frequency>
         <topic>$(arg cmd_vel_topic)</topic>
         <tf_topic>tf</tf_topic>
-        <frame_id>odom</frame_id>
-        <child_frame_id>base_link</child_frame_id>
+        <frame_id>$(arg odom_frame)</frame_id>
+        <child_frame_id>$(arg base_frame)</child_frame_id>
         <odom_topic>$(arg odom_topic)</odom_topic>
       </plugin>
       

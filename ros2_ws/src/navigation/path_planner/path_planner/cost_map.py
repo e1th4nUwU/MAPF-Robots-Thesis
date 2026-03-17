@@ -15,47 +15,71 @@ from nav_msgs.msg import OccupancyGrid
 from nav_msgs.srv import GetMap
 import numpy
 
-FULL_NAME = "FULL NAME"
+FULL_NAME = "Jorge Eithan Treviño Selles"
 
 class CostMapNode(Node):
     def get_inflated_map(self, static_map, inflation_cells):
+        """
+        Inflates the obstacles in the static map by a specified 
+        number of cells.
+        
+        Parameters:
+        - static_map: A 2D numpy array representing the occupancy grid map, where 0 indicates free space, 
+                      100 indicates occupied space, and -1 indicates unknown space.
+        - inflation_cells: The number of cells by which to inflate the obstacles.
+        Returns:
+        - A 2D numpy array representing the inflated occupancy grid map.
+        """
         self.get_logger().debug("Inflating map by " + str(inflation_cells) + " cells")
         inflated = numpy.copy(static_map)
         [height, width] = static_map.shape
-        #
-        # TODO:
-        # Write the code necessary to inflate the obstacles in the map a radius
-        # given by 'inflation_cells' (expressed in number of cells)
-        # Map is given in 'static_map' as a bidimensional numpy array.
-        # Consider as occupied cells all cells with an occupation value greater than 50
-        #
-        
+        for i in range(height):
+            for j in range(width):
+                # If the cell is occupied, inflate it
+                if static_map[i, j] > 50:
+                    # Loop over the neighborhood defined by the inflation radius
+                    for k1 in range(-inflation_cells, inflation_cells + 1):
+                        for k2 in range(-inflation_cells, inflation_cells + 1):
+                            # Check if the neighboring cell is within the bounds of the map
+                            if (0 <= i+k1 < height) and (0 <= j+k2 < width):
+                                # Mark the neighboring cell as occupied in the inflated map
+                                inflated[i+k1, j+k2] = 100
+
         return inflated
     
     def get_cost_map(self, static_map, cost_radius):
+        """
+        Calculates a cost map for the given map.
+        
+        Parameters:
+        - static_map: A 2D numpy array representing the occupancy grid map, where
+                        0 indicates free space, 100 indicates occupied space, and -1 indicates unknown space.
+        - cost_radius: The number of cells around obstacles with costs greater than zero.
+        Returns:
+        - A 2D numpy array representing the cost map, where each cell's value indicates
+            how close it is to an obstacle (higher values indicate closer proximity).
+        """
         self.get_logger().debug("Getting cost map with " + str(cost_radius) + " cells")
         cost_map = numpy.copy(static_map)
         [height, width] = static_map.shape
-        #
-        # TODO:
-        # Write the code necessary to calculate a cost map for the given map.
-        # To calculate cost, consider as example the following map:    
-        # [[ 0 0 0 0 0 0]
-        #  [ 0 X 0 0 0 0]
-        #  [ 0 X X 0 0 0]
-        #  [ 0 X X 0 0 0]
-        #  [ 0 X 0 0 0 0]
-        #  [ 0 0 0 X 0 0]]
-        # Where occupied cells 'X' have a value of 100 and free cells have a value of 0.
-        # Cost is an integer indicating how near cells and obstacles are:
-        # [[ 3 3 3 2 2 1]
-        #  [ 3 X 3 3 2 1]
-        #  [ 3 X X 3 2 1]
-        #  [ 3 X X 3 2 2]
-        #  [ 3 X 3 3 3 2]
-        #  [ 3 3 3 X 3 2]]
-        # Cost_radius indicate the number of cells around obstacles with costs greater than zero.
-        
+        # Loop through each cell in the map
+        for i in range(height):
+            for j in range(width):
+                # If the cell is occupied, calculate the cost for its neighbors
+                if static_map[i, j] > 50:
+                    for k1 in range(-cost_radius, cost_radius + 1):
+                        for k2 in range(-cost_radius, cost_radius + 1):
+                            # Calculate the coordinates of the neighboring cell
+                            ni, nj = i + k1, j + k2
+                            # Check if the neighboring cell is within the bounds of the map
+                            if (0 <= ni < height) and (0 <= nj < width):
+                                # Calculate the Chebyshev distance from the obstacle to the neighboring cell
+                                chebyshev_distance = max(abs(k1), abs(k2))
+                                # Calculate the cost based on the distance
+                                cost = cost_radius - chebyshev_distance + 1
+                                # Update the cost map with the maximum cost
+                                cost_map[ni, nj] = max(cost, cost_map[ni, nj])
+
         return cost_map
 
     def callback_inflated_map(self, request, response):
