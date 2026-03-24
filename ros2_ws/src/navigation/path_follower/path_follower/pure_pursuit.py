@@ -23,7 +23,7 @@ from ament_index_python.packages import get_package_share_directory
 import math
 import numpy
 
-NAME = "FULL NAME"
+NAME = "Jorge Eithan Treviño Selles"
 
 SM_INIT = 0
 SM_WAIT_FOR_NEW_GOAL = 10
@@ -34,43 +34,57 @@ SM_SAVE_DATA = 50
 
 class PurePursuitNode(Node):
     def calculate_control(self, robot_x, robot_y, robot_a, goal_x, goal_y, alpha, beta, v_max, w_max):
-        v,w = 0,0
-        #
-        # TODO:
-        # Implement the control law given by:
-        #
-        # v = v_max*math.exp(-error_a*error_a/alpha)
-        # w = w_max*(2/(1 + math.exp(-error_a/beta)) - 1)
-        #
-        # where error_a is the angle error
-        # and v_max, w_max, alpha and beta, are tunning constants.
-        # Remember to keep error angle in the interval (-pi,pi]
-        # Return the tuple [v,w]
-        #
-                
-        return [v,w]
+        error_a = math.atan2(goal_y - robot_y, goal_x - robot_x) - robot_a
+        # Normalize to (-pi, pi]
+        while error_a >  math.pi: error_a -= 2*math.pi
+        while error_a <= -math.pi: error_a += 2*math.pi
+        v = v_max * math.exp(-error_a * error_a / alpha)
+        w = w_max * (2.0 / (1.0 + math.exp(-error_a / beta)) - 1.0)
+        return [v, w]
 
     def pure_pursuit(self, path, alpha, beta, v_max, w_max, tol):
-        #
-        # TODO:
-        # Use the calculate_control function to move the robot along the path.
-        # Path is given as a sequence of points [[x0,y0], [x1,y1], ..., [xn,yn]]
-        # You can use the following steps to perform the path tracking by pure pursuit:
-        #
-        # Set goal point as the first point of the path
-        # Get robot position with Pr, robot_a = get_robot_pose()
-        #
-        # WHILE distance to last point > tol and rclpy.ok():
-        #     Calculate control signals v and w
-        #     Publish the control signals with the function publish_and_save_data()
-        #     Get robot position
-        #     If dist to goal point is less than 0.3 (you can change this constant)
-        #         Change goal point to the next point in the path
-        #
+        """
+        Follow the given path using the pure pursuit control law. The robot pose is obtained from tf.
         
-        #
-        # END OF WHILE
-        #
+        Args:
+            path: List of points [[x0,y0], [x1,y1], ..., [xn,yn]]
+            alpha: Control parameter for linear velocity
+            beta: Control parameter for angular velocity
+            v_max: Maximum linear velocity
+            w_max: Maximum angular velocity
+            tol: Tolerance for goal point acceptance
+            
+        Returns:
+            None
+        """
+        
+        if not path:
+            return
+        goal_idx = 0
+        # Get initial robot pose
+        robot_p, robot_a = self.get_robot_pose()
+
+        # Main control loop
+        while rclpy.ok():
+            # Grt current robot pose and current goal point
+            robot_x, robot_y = robot_p[0], robot_p[1]
+            goal_x, goal_y   = path[goal_idx][0], path[goal_idx][1]
+
+            # Check if global goal point is reached
+            if numpy.linalg.norm(robot_p - path[-1]) < tol:
+                break
+
+            # Calculate control commands and publish them
+            v, w = self.calculate_control(robot_x, robot_y, robot_a, goal_x, goal_y, alpha, beta, v_max, w_max)
+            self.publish_and_save_data(robot_x, robot_y, robot_a, goal_x, goal_y, v, w)
+
+            # Check if current goal point is reached and update goal index
+            robot_p, robot_a = self.get_robot_pose()
+
+            # If we reached this point, the global goal point is reached. Stop the robot and exit.
+            if numpy.linalg.norm(robot_p - path[goal_idx]) < 0.3 and goal_idx < len(path) - 1:
+                goal_idx += 1
+                
         return
 
     def publish_and_save_data(self, robot_x, robot_y, robot_a, goal_x, goal_y, v,w):

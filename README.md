@@ -99,6 +99,24 @@ ros2 topic pub --once /simon/goal_pose geometry_msgs/msg/PoseStamped \
 
 RViz shows each robot's planned path in its color (red = alvin, green = teodoro, blue = simon).
 
+### Testing Pure Pursuit (Single Robot)
+
+To debug or test one robot in isolation without launching the full swarm:
+
+```bash
+# Terminal 1 — full simulation + shared infrastructure
+ros2 launch swarm_bringup scenario.launch.py scenario:=towers
+
+# Terminal 2 — navigation stack for one robot only
+ros2 launch motion_planning robot_nav.launch.py robot_name:=alvin
+
+# Terminal 3 — send a goal
+ros2 topic pub --once /alvin/goal_pose geometry_msgs/msg/PoseStamped \
+  "{header: {frame_id: 'map'}, pose: {position: {x: 8.0, y: 1.5, z: 0.0}}}"
+```
+
+Tune the controller gains in [robot_nav.launch.py](ros2_ws/src/navigation/motion_planning/launch/robot_nav.launch.py) (`alpha`, `beta`) if the robot is too jerky or too slow to turn.
+
 ### Per-Robot Navigation Topics
 
 | Topic | Description |
