@@ -12,6 +12,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.duration import Duration
 from std_msgs.msg import Bool
+from navig_msgs.msg import RobotHealth
 from nav_msgs.msg import Path
 from nav_msgs.srv import GetPlan
 from navig_msgs.srv import ProcessPath
@@ -44,48 +45,59 @@ class PurePursuitNode(Node):
 
     def pure_pursuit(self, path, alpha, beta, v_max, w_max, tol):
         """
-        Follow the given path using the pure pursuit control law. The robot pose is obtained from tf.
-        
+        Follow the given path using the pure pursuit control law with a lookahead point.
+
+        Instead of chasing waypoints one by one, the robot always steers toward the
+        point on the path that is exactly LOOKAHEAD_DIST metres ahead of its current
+        position. This produces smooth, stable tracking without oscillation.
+
         Args:
-            path: List of points [[x0,y0], [x1,y1], ..., [xn,yn]]
+            path: List of numpy arrays [x, y] — dense waypoints from A*
             alpha: Control parameter for linear velocity
-            beta: Control parameter for angular velocity
-            v_max: Maximum linear velocity
-            w_max: Maximum angular velocity
-            tol: Tolerance for goal point acceptance
-            
-        Returns:
-            None
+            beta:  Control parameter for angular velocity
+            v_max: Maximum linear velocity  (m/s)
+            w_max: Maximum angular velocity (rad/s)
+            tol:   Distance to final goal considered "reached" (m)
         """
-        
         if not path:
             return
-        goal_idx = 0
-        # Get initial robot pose
-        robot_p, robot_a = self.get_robot_pose()
 
-        # Main control loop
-        while rclpy.ok():
-            # Grt current robot pose and current goal point
+        LOOKAHEAD_DIST = 0.5   # metres ahead to target on the path
+
+        # Index of the furthest path point we have "passed" — the lookahead
+        # search starts from here so it always moves forward along the path.
+        anchor_idx = 0
+
+        while rclpy.ok() and self.robot_alive and not self.needs_replan:
+            robot_p, robot_a = self.get_robot_pose()
             robot_x, robot_y = robot_p[0], robot_p[1]
-            goal_x, goal_y   = path[goal_idx][0], path[goal_idx][1]
 
-            # Check if global goal point is reached
+            # ── Stop if final goal is close enough ──────────────────────────
             if numpy.linalg.norm(robot_p - path[-1]) < tol:
                 break
 
-            # Calculate control commands and publish them
-            v, w = self.calculate_control(robot_x, robot_y, robot_a, goal_x, goal_y, alpha, beta, v_max, w_max)
+            # ── Advance anchor to the closest path point to the robot ───────
+            # This prevents the lookahead from ever going backwards.
+            best_dist = float('inf')
+            for i in range(anchor_idx, len(path)):
+                d = numpy.linalg.norm(robot_p - path[i])
+                if d < best_dist:
+                    best_dist = d
+                    anchor_idx = i
+
+            # ── Find lookahead point: first path point >= LOOKAHEAD_DIST ────
+            lookahead = path[-1]   # default: final goal
+            for i in range(anchor_idx, len(path)):
+                if numpy.linalg.norm(robot_p - path[i]) >= LOOKAHEAD_DIST:
+                    lookahead = path[i]
+                    break
+
+            goal_x, goal_y = lookahead[0], lookahead[1]
+
+            # ── Compute and publish control ──────────────────────────────────
+            v, w = self.calculate_control(robot_x, robot_y, robot_a,
+                                          goal_x, goal_y, alpha, beta, v_max, w_max)
             self.publish_and_save_data(robot_x, robot_y, robot_a, goal_x, goal_y, v, w)
-
-            # Check if current goal point is reached and update goal index
-            robot_p, robot_a = self.get_robot_pose()
-
-            # If we reached this point, the global goal point is reached. Stop the robot and exit.
-            if numpy.linalg.norm(robot_p - path[goal_idx]) < 0.3 and goal_idx < len(path) - 1:
-                goal_idx += 1
-                
-        return
 
     def publish_and_save_data(self, robot_x, robot_y, robot_a, goal_x, goal_y, v,w):
         self.nav_data.append([robot_x, robot_y, robot_a, goal_x, goal_y, v, w])
@@ -112,6 +124,18 @@ class PurePursuitNode(Node):
             robot_a = 0.0
         return robot_pose, robot_a
 
+    def _kill_callback(self, msg: Bool) -> None:
+        if msg.data and self.robot_alive:
+            self.robot_alive = False
+            self.get_logger().warn("Robot killed — stopping navigation")
+
+    def _replan_callback(self, msg: Bool) -> None:
+        if msg.data and self.robot_alive:
+            self.needs_replan = True
+            # Stop immediately so the robot doesn't keep moving while replanning
+            self.pub_cmd_vel.publish(Twist())
+            self.get_logger().info("Replan requested — stopping and replanning")
+
     def callback_goal_pose(self, msg):
         self.goal_pose = numpy.asarray([msg.pose.position.x, msg.pose.position.y])
         self.get_logger().info("Received new goal pose: " + str(self.goal_pose))
@@ -126,6 +150,8 @@ class PurePursuitNode(Node):
         self.robot_a = 0.0
         self.new_goal_pose = False
         self.goal_pose = numpy.asarray([0.0,0.0])
+        self.robot_alive = True
+        self.needs_replan = False
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.declare_parameter('v_max', 0.5)
@@ -136,6 +162,8 @@ class PurePursuitNode(Node):
         self.declare_parameter('robot_frame', 'base_link')
         self.clt_plan_path = self.create_client(GetPlan, 'path_planning/plan_path')
         self.clt_smooth_path = self.create_client(ProcessPath, 'path_planning/smooth_path')
+        self.create_subscription(Bool, 'kill', self._kill_callback, 10)
+        self.create_subscription(Bool, '/replan_needed', self._replan_callback, 10)
         self.pub_cmd_vel = self.create_publisher(Twist, 'cmd_vel', 1)
         self.pub_goal_reached = self.create_publisher(Bool, 'navigation/goal_reached', 1)
         self.sub_goal_pose = self.create_subscription(PoseStamped, 'goal_pose', self.callback_goal_pose, 1)
@@ -175,6 +203,9 @@ class PurePursuitNode(Node):
                 state = SM_WAIT_FOR_NEW_GOAL
 
             elif state == SM_WAIT_FOR_NEW_GOAL:
+                rclpy.spin_once(self, timeout_sec=0.1)
+                if not self.robot_alive:
+                    continue   # robot is dead — ignore new goals
                 if self.new_goal_pose:
                     self.new_goal_pose = False
                     state = SM_PLAN_PATH
@@ -214,9 +245,22 @@ class PurePursuitNode(Node):
                 path_points = [numpy.asarray([p.pose.position.x, p.pose.position.y]) for p in path.poses]
                 self.pure_pursuit(path_points, alpha, beta, v_max, w_max, tol)
                 self.pub_cmd_vel.publish(Twist())
-                self.pub_goal_reached.publish(Bool(data=True))
-                self.get_logger().info("Global goal point reached")
-                state = SM_SAVE_DATA
+                if self.needs_replan:
+                    # A teammate died — stop, wait for updated map, then replan
+                    self.needs_replan = False
+                    self.pub_cmd_vel.publish(Twist())  # ensure stopped
+                    self.get_logger().info("Replanning due to map change (teammate died) — waiting for updated map...")
+                    self.get_clock().sleep_for(Duration(seconds=1.5))  # let cost_map publish new map
+                    self.get_logger().info("Replanning now")
+                    state = SM_PLAN_PATH
+                elif not self.robot_alive:
+                    # Killed during path following — do NOT publish goal_reached
+                    self.get_logger().info("Robot killed during path following — not publishing goal_reached")
+                    state = SM_WAIT_FOR_NEW_GOAL
+                else:
+                    self.pub_goal_reached.publish(Bool(data=True))
+                    self.get_logger().info("Global goal point reached")
+                    state = SM_SAVE_DATA
 
             elif state == SM_SAVE_DATA:
                 s = ""

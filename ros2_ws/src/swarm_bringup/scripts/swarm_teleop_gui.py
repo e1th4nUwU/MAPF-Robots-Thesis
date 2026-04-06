@@ -23,6 +23,8 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
+from std_msgs.msg import Bool
+from navig_msgs.msg import RobotHealth
 
 # ── Robot definitions ──────────────────────────────────────────────────────────
 
@@ -51,21 +53,29 @@ def _lighten(hex_color: str, amount: float = 0.28) -> str:
 # ── ROS2 node ──────────────────────────────────────────────────────────────────
 
 class SwarmNode(Node):
-    """Publishes cmd_vel + subscribes to odom for all robots."""
+    """Publishes cmd_vel + subscribes to odom/health for all robots."""
 
     def __init__(self):
         super().__init__('swarm_teleop_gui')
         self._pubs = {}
+        self._kill_pubs = {}
         # Telemetry: (x, y, yaw_deg, vx, omega)  — None until first message
         self.telem = {r['name']: None for r in ROBOTS}
+        # Health: True = alive, None = unknown yet
+        self.health = {r['name']: None for r in ROBOTS}
 
         for r in ROBOTS:
             name = r['name']
             self._pubs[name] = self.create_publisher(
                 Twist, f'/{name}/cmd_vel', 10)
+            self._kill_pubs[name] = self.create_publisher(
+                Bool, f'/{name}/kill', 10)
             self.create_subscription(
                 Odometry, f'/{name}/odom',
                 lambda msg, n=name: self._odom_cb(msg, n), 10)
+            self.create_subscription(
+                RobotHealth, f'/{name}/health',
+                lambda msg, n=name: self._health_cb(msg, n), 10)
 
     def send(self, name: str, lx: float, az: float) -> None:
         msg = Twist()
@@ -80,6 +90,11 @@ class SwarmNode(Node):
         for r in ROBOTS:
             self.stop(r['name'])
 
+    def kill(self, name: str) -> None:
+        """Stop the robot immediately and signal the health monitor to mark it dead."""
+        self.stop(name)
+        self._kill_pubs[name].publish(Bool(data=True))
+
     def _odom_cb(self, msg: Odometry, name: str) -> None:
         p = msg.pose.pose.position
         v = msg.twist.twist
@@ -90,6 +105,9 @@ class SwarmNode(Node):
             v.linear.x,
             v.angular.z,
         )
+
+    def _health_cb(self, msg: RobotHealth, name: str) -> None:
+        self.health[name] = msg.is_alive
 
 # ── Heading canvas ─────────────────────────────────────────────────────────────
 
@@ -219,6 +237,24 @@ class RobotPanel(tk.LabelFrame):
             bg='#16213e', fg='#7f8c8d', font=('Helvetica', 9))
         self._status_dot.pack(side='left')
 
+        # Health indicator + KILL button
+        health_frame = tk.Frame(self, bg='#16213e')
+        health_frame.pack(fill='x', pady=(6, 0))
+
+        self._health_label = tk.Label(
+            health_frame, text='◉ HEALTH: unknown',
+            bg='#16213e', fg='#7f8c8d', font=('Helvetica', 9, 'bold'))
+        self._health_label.pack(side='left')
+
+        tk.Button(
+            health_frame, text='☠ KILL',
+            bg='#1a1a2e', fg='#e74c3c',
+            font=('Helvetica', 10, 'bold'),
+            relief='raised', bd=2, cursor='hand2', padx=6,
+            activebackground='#e74c3c', activeforeground='white',
+            command=lambda: self._node.kill(self._name),
+        ).pack(side='right')
+
     # ── Continuous publish ─────────────────────────────────────────────────────
 
     def _press(self, lx: float, az: float) -> None:
@@ -241,24 +277,31 @@ class RobotPanel(tk.LabelFrame):
 
     def refresh(self) -> None:
         t = self._node.telem.get(self._name)
-        if t is None:
-            return
+        if t is not None:
+            x, y, yaw_deg, vx, omega = t
 
-        x, y, yaw_deg, vx, omega = t
+            self._vars['x'] .set(f'{x:+8.3f}')
+            self._vars['y'] .set(f'{y:+8.3f}')
+            self._vars['θ'] .set(f'{yaw_deg:+8.1f}')
+            self._vars['vx'].set(f'{vx:+8.3f}')
+            self._vars['ω'] .set(f'{omega:+8.3f}')
 
-        self._vars['x'] .set(f'{x:+8.3f}')
-        self._vars['y'] .set(f'{y:+8.3f}')
-        self._vars['θ'] .set(f'{yaw_deg:+8.1f}')
-        self._vars['vx'].set(f'{vx:+8.3f}')
-        self._vars['ω'] .set(f'{omega:+8.3f}')
+            self._heading.set_yaw(yaw_deg)
 
-        self._heading.set_yaw(yaw_deg)
+            moving = abs(vx) > 0.01 or abs(omega) > 0.01
+            self._status_dot.configure(
+                text='● moving' if moving else '● stopped',
+                fg='#2ecc71' if moving else '#95a5a6',
+            )
 
-        moving = abs(vx) > 0.01 or abs(omega) > 0.01
-        self._status_dot.configure(
-            text='● moving' if moving else '● stopped',
-            fg='#2ecc71' if moving else '#95a5a6',
-        )
+        # Health indicator
+        alive = self._node.health.get(self._name)
+        if alive is None:
+            self._health_label.configure(text='◉ HEALTH: unknown', fg='#7f8c8d')
+        elif alive:
+            self._health_label.configure(text='◉ HEALTH: alive', fg='#2ecc71')
+        else:
+            self._health_label.configure(text='◉ HEALTH: DEAD', fg='#e74c3c')
 
 # ── Main window ────────────────────────────────────────────────────────────────
 
