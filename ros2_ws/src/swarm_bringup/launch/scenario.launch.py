@@ -619,6 +619,14 @@ def launch_setup(context, *args, **kwargs):
         ],
     )
 
+    health_monitor = Node(
+        package='swarm_bringup',
+        executable='swarm_health_monitor.py',
+        name='swarm_health_monitor',
+        output='screen',
+        parameters=[{'use_sim_time': True}],
+    )
+
     nodes = [
         LogInfo(msg=f"Launching scenario: {scenario}"),
         LogInfo(msg=f"Using generated map yaml: {map_yaml_path}"),
@@ -628,6 +636,7 @@ def launch_setup(context, *args, **kwargs):
         *robot_nav_nodes,
         teleop_gui,
         viz_bridge,
+        health_monitor,
     ]
 
     for robot, urdf in zip(robots, robots_urdf):

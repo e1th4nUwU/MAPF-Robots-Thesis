@@ -11,7 +11,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.time import Time, Duration
 from geometry_msgs.msg import PoseStamped, Pose, Point
-from nav_msgs.msg import Path
+from nav_msgs.msg import Path, OccupancyGrid
 from nav_msgs.srv import *
 from builtin_interfaces.msg import Duration
 from collections import deque
@@ -167,6 +167,12 @@ class AStarNode(Node):
         resp.plan = self.msg_path
         return resp
 
+    def _inflated_map_cb(self, msg: OccupancyGrid):
+        self.inflated_map = msg
+
+    def _cost_map_cb(self, msg: OccupancyGrid):
+        self.cost_map = msg
+
     def callback_timer(self):
         self.pub_path.publish(self.msg_path)
             
@@ -182,6 +188,9 @@ class AStarNode(Node):
         self.pub_path = self.create_publisher(Path, 'path_planning/path', 10)
         self.msg_path = Path()
         self.timer = self.create_timer(0.5, self.callback_timer)
+        # Keep maps fresh by listening to what cost_map publishes (includes dead robots)
+        self.create_subscription(OccupancyGrid, '/inflated_map', self._inflated_map_cb, 10)
+        self.create_subscription(OccupancyGrid, '/cost_map',     self._cost_map_cb,     10)
             
 def main(args=None):
     rclpy.init(args=args)

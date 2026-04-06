@@ -16,8 +16,9 @@ find_package(rosidl_default_generators REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/GeometryGraph.msg"
   "msg/Edges.msg"
+  "msg/RobotHealth.msg"
   "srv/ProcessPath.srv"
-  DEPENDENCIES std_msgs geometry_msgs nav_msgs# Add packages that above messages depend on, in this case geometry_msgs for Sphere.msg
+  DEPENDENCIES std_msgs geometry_msgs nav_msgs
 )
 
 if(BUILD_TESTING)

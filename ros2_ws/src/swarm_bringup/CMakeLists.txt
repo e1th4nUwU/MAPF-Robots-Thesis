@@ -14,6 +14,7 @@ install(
     scripts/swarm_monitor.py
     scripts/swarm_teleop_gui.py
     scripts/swarm_viz_bridge.py
+    scripts/swarm_health_monitor.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
