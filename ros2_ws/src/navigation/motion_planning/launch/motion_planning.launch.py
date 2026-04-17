@@ -59,7 +59,7 @@ def generate_launch_description():
             executable='cost_map',
             name='cost_map',
             output='screen',
-            parameters=[{'inflation_radius': 0.35}, {'cost_radius': 0.7}]
+            parameters=[{'inflation_radius': 0.5}, {'cost_radius': 1.0}]
         ),
         # ── Per-robot navigation is launched separately via robot_nav.launch.py
         # Include it once per robot in scenario.launch.py (or test_one_robot).

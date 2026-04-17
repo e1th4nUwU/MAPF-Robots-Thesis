@@ -157,13 +157,13 @@ def _boundary_walls(ax=ARENA_X, ay=ARENA_Y, h=WALL_H, t=WALL_T):
 
 
 def _goal_marker(name='goal', cx=8.0, cy=0.0, lx=1.0, ly=10.0):
-    """Flat bright-green rectangle on the ground indicating the goal zone."""
-    return _box(name, cx, cy, 0.05, lx, ly, 0.1, color=C_GOAL)
+    """Tall bright-green rectangle indicating the goal zone."""
+    return _box(name, cx, cy, 0.75, lx, ly, 1.5, color=C_GOAL)
 
 
 # ── Scenario geometry ──────────────────────────────────────────────────────────
 
-def _build_towers():
+def _build_towers(show_goals=False):
     """4-row staggered slalom of rust-red cylinders.
 
     Each row alternates which y-positions are blocked, forcing robots to
@@ -184,11 +184,12 @@ def _build_towers():
     parts = [_cylinder(f'tower_{i}', x, y, h/2, r, h, color=C_TOWER)
              for i, (x, y) in enumerate(positions)]
     parts += _boundary_walls()
-    parts.append(_goal_marker(cy=0.0, ly=ARENA_Y * 2))
+    if show_goals:
+        parts.append(_goal_marker(cy=0.0, ly=ARENA_Y * 2))
     return '\n'.join(parts)
 
 
-def _build_rocks():
+def _build_rocks(show_goals=False):
     """Scattered boulders: warm-brown spheres + dark-charcoal rotated boxes.
 
     Rocks are sized and placed so a ~0.5 m wide robot must actively plan
@@ -223,11 +224,12 @@ def _build_rocks():
         parts.append(_box(f'rock_b{i}', cx, cy, lz/2,
                           lx, ly, lz, yaw=math.radians(yd), color=C_ROCK_BOX))
     parts += _boundary_walls()
-    parts.append(_goal_marker(cy=0.0, ly=ARENA_Y * 2))
+    if show_goals:
+        parts.append(_goal_marker(cy=0.0, ly=ARENA_Y * 2))
     return '\n'.join(parts)
 
 
-def _build_maze():
+def _build_maze(show_goals=False):
     """Two-corridor maze: sandstone structural walls, orange chicane barriers.
 
     Layout (top view):
@@ -270,10 +272,10 @@ def _build_maze():
         _box('bnd_north_out', 0.0,  ARENA_Y, h/2, span+t, t, h, color=C_BOUNDARY),
         _box('bnd_south_out', 0.0, -ARENA_Y, h/2, span+t, t, h, color=C_BOUNDARY),
 
-        # ── Goal zones (one per corridor) ──
-        _goal_marker('goal_top', cx=8.5, cy= 2.5, lx=1.0, ly=4.5),
-        _goal_marker('goal_bot', cx=8.5, cy=-2.5, lx=1.0, ly=4.5),
     ]
+    if show_goals:
+        parts.append(_goal_marker('goal_top', cx=8.5, cy=2.5, lx=1.0, ly=4.5))
+        parts.append(_goal_marker('goal_bot', cx=8.5, cy=-2.5, lx=1.0, ly=4.5))
     return '\n'.join(parts)
 
 
@@ -526,6 +528,8 @@ def _build_world(robots_sdf, scenario_xml):
 def launch_setup(context, *args, **kwargs):
     scenario = LaunchConfiguration('scenario').perform(context)
     use_rviz = LaunchConfiguration('use_rviz')
+    planner = LaunchConfiguration('planner').perform(context)
+    show_gazebo_goals = LaunchConfiguration('show_gazebo_goals').perform(context) == 'true'
     if scenario not in VALID_SCENARIOS:
         raise ValueError(
             f"Unknown scenario '{scenario}'. Valid: {VALID_SCENARIOS}"
@@ -551,7 +555,11 @@ def launch_setup(context, *args, **kwargs):
         robots_urdf.append(urdf)
         robots_sdf.append(_robot_to_sdf(urdf, robot))
 
-    world_path = _build_world(robots_sdf, SCENARIO_GEOMETRY[scenario]())
+    scenario_xml = SCENARIO_GEOMETRY[scenario](show_goals=show_gazebo_goals)
+    world_path = _build_world(robots_sdf, scenario_xml)
+    if show_gazebo_goals:
+        print(f"[DEBUG] show_gazebo_goals={show_gazebo_goals}")
+        print(f"[DEBUG] Generated world with goal markers")
     map_yaml_path = _write_scenario_map_files(scenario)
 
     gazebo = IncludeLaunchDescription(
@@ -596,7 +604,10 @@ def launch_setup(context, *args, **kwargs):
                     FindPackageShare('motion_planning'), 'launch', 'robot_nav.launch.py'
                 ])
             ),
-            launch_arguments={'robot_name': robot['name']}.items(),
+            launch_arguments={
+                'robot_name': robot['name'],
+                'planner': planner
+            }.items(),
         )
         for robot in robots
     ]
@@ -638,6 +649,38 @@ def launch_setup(context, *args, **kwargs):
         viz_bridge,
         health_monitor,
     ]
+
+    if planner == 'whca':
+        nodes.append(Node(
+            package='mapf_coordinator',
+            executable='priority_manager',
+            name='priority_manager',
+            output='screen',
+            parameters=[{'use_sim_time': True}],
+        ))
+        nodes.append(Node(
+            package='mapf_coordinator',
+            executable='whca_coordinator',
+            name='whca_coordinator',
+            output='screen',
+            parameters=[{'use_sim_time': True}],
+        ))
+        for robot in robots:
+            nodes.append(GroupAction([
+                PushRosNamespace(robot['name']),
+                Node(
+                    package='mapf_coordinator',
+                    executable='whca_star',
+                    name='whca_star',
+                    output='screen',
+                    parameters=[{
+                        'robot_name': robot['name'],
+                        'window_size': 10,
+                        'diagonals': True,
+                        'use_sim_time': True,
+                    }],
+                ),
+            ]))
 
     for robot, urdf in zip(robots, robots_urdf):
         name = robot['name']
@@ -692,6 +735,16 @@ def generate_launch_description():
             'use_rviz',
             default_value='true',
             description='Launch RViz2 with the scenario-aligned occupancy map',
+        ),
+        DeclareLaunchArgument(
+            'planner',
+            default_value='independent',
+            description='MAPF mode: independent | whca | cbs',
+        ),
+        DeclareLaunchArgument(
+            'show_gazebo_goals',
+            default_value='false',
+            description='Render goal zone boxes in Gazebo',
         ),
         OpaqueFunction(function=launch_setup),
     ])
