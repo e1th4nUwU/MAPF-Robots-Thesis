@@ -52,6 +52,19 @@ source ros2_ws/install/setup.bash
 
 If `rosdep` was already initialized on your machine, the script reuses it.
 
+### Goal Zone Visualization
+
+Goal zones can be visualized in **both RViz and Gazebo**:
+
+**RViz visualization** (always available):
+- Green rectangle outlines automatically publish to the `/goal_zone_marker` topic
+- Use the visualizer-only launcher to show zones without assigning goals (see below)
+
+**Gazebo visualization** (optional):
+- Add `show_gazebo_goals:=true` to render green goal zone boxes in the simulation
+- Example: `ros2 launch swarm_bringup scenario.launch.py scenario:=towers show_gazebo_goals:=true`
+- Goal zones appear as semi-transparent green boxes at the arena's east side
+
 ## Quick Verification
 
 ```bash
@@ -76,10 +89,17 @@ The scenario launch also starts:
 - teleoperation GUI (`swarm_teleop_gui.py`)
 - RViz2 (optional, enabled by default) with a map aligned to the selected scenario
 
-To run without RViz:
+Optional parameters:
 
 ```bash
+# Hide RViz window
 ros2 launch swarm_bringup scenario.launch.py scenario:=towers use_rviz:=false
+
+# Show goal zone boxes in Gazebo (green semi-transparent areas)
+ros2 launch swarm_bringup scenario.launch.py scenario:=towers show_gazebo_goals:=true
+
+# Combine options
+ros2 launch swarm_bringup scenario.launch.py scenario:=maze show_gazebo_goals:=true planner:=whca
 ```
 
 ### Send Navigation Goals
@@ -98,6 +118,66 @@ ros2 topic pub --once /simon/goal_pose geometry_msgs/msg/PoseStamped \
 ```
 
 RViz shows each robot's planned path in its color (red = alvin, green = teodoro, blue = simon).
+
+### Automated Goal Zone Assignment (GNFC)
+
+Instead of manually sending individual goals, use **Greedy Nearest-Free-Cell (GNFC)** to automatically assign unique goal points within a rectangular zone. This is useful for testing multi-robot coordination.
+
+**Two-terminal workflow:**
+
+```bash
+# Terminal 1 — launch the scenario
+ros2 launch swarm_bringup scenario.launch.py scenario:=towers planner:=independent
+
+# Terminal 2 — define goal zone and auto-assign goals
+ros2 launch mapf_coordinator goal_zone.launch.py \
+  x_min:=7.5 x_max:=9.0 y_min:=-1.0 y_max:=1.0 spacing:=0.3
+```
+
+**What happens:**
+- GNFC allocator automatically assigns each robot a unique goal point within the zone
+- Visualizer displays a **green rectangle** in RViz and Gazebo showing the goal zone boundaries
+- Each robot receives its goal via `/{robot}/goal_pose` and begins navigation
+
+**Customize the goal zone by scenario:**
+
+Towers (open field):
+```bash
+ros2 launch mapf_coordinator goal_zone.launch.py \
+  x_min:=7.5 x_max:=9.0 y_min:=-1.0 y_max:=1.0 spacing:=0.3
+```
+
+Rocks (tighter zone):
+```bash
+ros2 launch mapf_coordinator goal_zone.launch.py \
+  x_min:=8.0 x_max:=8.8 y_min:=-0.8 y_max:=0.8 spacing:=0.2
+```
+
+Maze (spread out):
+```bash
+ros2 launch mapf_coordinator goal_zone.launch.py \
+  x_min:=6.0 x_max:=8.0 y_min:=-2.0 y_max:=2.0 spacing:=0.4
+```
+
+**Parameters:**
+- `x_min`, `x_max`: zone boundaries in X (metres)
+- `y_min`, `y_max`: zone boundaries in Y (metres)
+- `spacing`: grid spacing between candidate goal points (metres)
+
+### Visualizing Goal Zones (without goal assignment)
+
+To visualize a goal zone **without automatically assigning goals** to robots, use the visualizer-only launcher:
+
+```bash
+# Terminal 1 — launch the scenario
+ros2 launch swarm_bringup scenario.launch.py scenario:=towers
+
+# Terminal 2 — visualize goal zone (RViz + Gazebo)
+ros2 launch mapf_coordinator visualizer_only.launch.py \
+  x_min:=7.5 x_max:=9.0 y_min:=-1.0 y_max:=1.0
+```
+
+This displays a **green rectangle** showing the goal zone boundaries in both RViz and Gazebo (if `ros-jazzy-gazebo-msgs` is installed), without triggering automatic goal assignment to robots.
 
 ### Testing Pure Pursuit (Single Robot)
 

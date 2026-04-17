@@ -22,8 +22,8 @@ FULL_NAME = "Jorge Eithan Treviño Selles"
 ROBOT_NAMES = ['alvin', 'teodoro', 'simon']
 
 # Radius (metres) used to paint a dead robot as an obstacle on the map.
-# Matches the robot's half-diagonal so A* respects its physical footprint.
-DEAD_ROBOT_RADIUS_M = 0.35
+# Conservative coverage of ~0.5m robot body.
+DEAD_ROBOT_RADIUS_M = 0.2
 
 class CostMapNode(Node):
     def get_inflated_map(self, static_map, inflation_cells):
@@ -223,11 +223,22 @@ class CostMapNode(Node):
             self.get_logger().info('Waiting for static map service...')
         self.get_logger().info("Static map service is now available...")
         self.get_logger().info("Trying to get first static map...")
-        future = self.clt_static_map.call_async(GetMap.Request())
-        rclpy.spin_until_future_complete(self, future)
-        response = future.result()
-        self.map_static = response.map
-        self.get_logger().info("Got static map.")
+        self.map_static = None
+        max_retries = 5
+        for attempt in range(max_retries):
+            try:
+                future = self.clt_static_map.call_async(GetMap.Request())
+                rclpy.spin_until_future_complete(self, future)
+                response = future.result()
+                if response and response.map and response.map.info.resolution > 0:
+                    self.map_static = response.map
+                    self.get_logger().info("Got static map.")
+                    break
+            except Exception as e:
+                self.get_logger().warn(f"Attempt {attempt+1} failed: {e}")
+            if self.map_static is None:
+                self.get_logger().info(f"Retrying map service (attempt {attempt+1}/{max_retries})...")
+                self.get_clock().sleep_for(Duration(seconds=1.0))
         self.declare_parameter('inflation_radius', 0.05)
         self.declare_parameter('cost_radius', 0.05)
 
