@@ -37,14 +37,18 @@ echo "[2/7] Enabling Ubuntu universe repository..."
 sudo add-apt-repository universe -y
 
 echo "[3/7] Configuring ROS 2 apt repository..."
-sudo install -d -m 0755 /etc/apt/keyrings
-if [[ ! -f /etc/apt/keyrings/ros-archive-keyring.gpg ]]; then
-	curl -fsSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
-		| sudo gpg --dearmor -o /etc/apt/keyrings/ros-archive-keyring.gpg
-fi
+if [[ -e /etc/apt/sources.list.d/ros2.sources ]]; then
+	echo "ROS 2 apt source already configured via ros2.sources, skipping."
+else
+	sudo install -d -m 0755 /etc/apt/keyrings
+	if [[ ! -f /etc/apt/keyrings/ros-archive-keyring.gpg ]]; then
+		curl -fsSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+			| sudo gpg --dearmor -o /etc/apt/keyrings/ros-archive-keyring.gpg
+	fi
 
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu ${UBUNTU_CODENAME} main" \
-	| sudo tee /etc/apt/sources.list.d/ros2.list >/dev/null
+	echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu ${UBUNTU_CODENAME} main" \
+		| sudo tee /etc/apt/sources.list.d/ros2.list >/dev/null
+fi
 
 echo "[4/7] Installing ROS 2, Gazebo, and workspace dependencies..."
 sudo apt-get update
