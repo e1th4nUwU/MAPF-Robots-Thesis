@@ -11,7 +11,8 @@
 import rclpy
 from rclpy.node import Node
 from rclpy.duration import Duration
-from std_msgs.msg import Bool
+from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
+from std_msgs.msg import Bool, String
 from navig_msgs.msg import RobotHealth
 from nav_msgs.msg import Path
 from nav_msgs.srv import GetPlan
@@ -22,9 +23,33 @@ from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
 from ament_index_python.packages import get_package_share_directory
 import math
+import time
 import numpy
 
 NAME = "Jorge Eithan Treviño Selles"
+
+ROBOT_NAMES = ['alvin', 'teodoro', 'simon']
+
+# Yield distance (m): if a higher-priority robot is closer than this AND
+# in front of us (ahead along our heading), this robot stops to let it pass.
+# 1.20 m = 2 robot radii (0.60 m) + 0.60 m reaction buffer at v_max=0.5 m/s
+# (≈1.2 s of braking distance).  Larger than before (0.80 m) because the
+# old value let robots get inside the WHCA* lookahead window before yielding,
+# producing rear-end collisions in tight corridors.
+YIELD_DISTANCE_M = 1.20
+
+# Half-angle (rad) of the "front cone" used by _should_yield.  A higher-
+# priority robot only triggers a yield if it lies within ±FRONT_CONE_RAD of
+# our heading.  Without this, a higher-priority robot trailing behind would
+# make us stop forever (it never overtakes — we never restart).
+# 1.57 rad ≈ 90°, i.e. anything in our forward hemisphere counts as "ahead".
+FRONT_CONE_RAD = 1.57
+
+# Emergency stop (m): stop for ANY robot regardless of priority when this
+# close. Prevents the highest-priority robot from driving into a stopped or
+# slow lower-priority robot at a chokepoint. 0.65 m = contact distance
+# (2 × 0.30 m radius) + 0.05 m margin.
+EMERGENCY_STOP_M = 0.65
 
 SM_INIT = 0
 SM_WAIT_FOR_NEW_GOAL = 10
@@ -62,7 +87,7 @@ class PurePursuitNode(Node):
         if not path:
             return
 
-        LOOKAHEAD_DIST = 0.5   # metres ahead to target on the path
+        LOOKAHEAD_DIST = 0.25  # metres ahead to target on the path
 
         # Index of the furthest path point we have "passed" — the lookahead
         # search starts from here so it always moves forward along the path.
@@ -75,6 +100,14 @@ class PurePursuitNode(Node):
             # ── Stop if final goal is close enough ──────────────────────────
             if numpy.linalg.norm(robot_p - path[-1]) < tol:
                 break
+
+            # ── Reactive yield: if a higher-priority robot is within
+            # YIELD_DISTANCE_M, stop and let it pass.  This handles cases
+            # where WHCA*'s spatial plans converge briefly at chokepoints.
+            if self._should_yield(robot_p, robot_a):
+                self.publish_and_save_data(robot_x, robot_y, robot_a,
+                                           robot_x, robot_y, 0.0, 0.0)
+                continue
 
             # ── Advance anchor to the closest path point to the robot ───────
             # This prevents the lookahead from ever going backwards.
@@ -124,17 +157,68 @@ class PurePursuitNode(Node):
             robot_a = 0.0
         return robot_pose, robot_a
 
+    def _should_yield(self, robot_p, robot_a):
+        """True when this robot should stop to avoid collision or yield priority.
+
+        Three-layer check (uses TF positions in MAP frame for cross-robot
+        comparison):
+        - EMERGENCY_STOP_M  : stop for ANY robot regardless of priority/heading.
+        - YIELD_DISTANCE_M  : proactive stop for higher-priority robots that are
+                              *ahead* of us (within FRONT_CONE_RAD of heading).
+                              Without the heading filter, a trailing higher-
+                              priority robot would lock us in place forever.
+        """
+        my_idx = (self._priorities.index(self._robot_name)
+                  if self._robot_name in self._priorities else 999)
+        for r in ROBOT_NAMES:
+            if r == self._robot_name:
+                continue
+            try:
+                t = self.tf_buffer.lookup_transform(
+                    'map', f'{r}/base_link', rclpy.time.Time())
+                pos = numpy.asarray([t.transform.translation.x,
+                                      t.transform.translation.y])
+            except TransformException:
+                continue
+            delta = pos - robot_p
+            dist = numpy.linalg.norm(delta)
+            if dist < EMERGENCY_STOP_M:
+                return True  # too close to any robot — stop regardless of priority
+            r_idx = (self._priorities.index(r)
+                     if r in self._priorities else 999)
+            if r_idx >= my_idx or dist >= YIELD_DISTANCE_M:
+                continue
+            # Higher priority + within yield range — only yield if the other
+            # robot is ahead of us (would be in our way if we keep moving).
+            if dist < 1e-6:
+                return True
+            bearing = math.atan2(delta[1], delta[0])
+            rel_angle = bearing - robot_a
+            while rel_angle >  math.pi: rel_angle -= 2 * math.pi
+            while rel_angle <= -math.pi: rel_angle += 2 * math.pi
+            if abs(rel_angle) < FRONT_CONE_RAD:
+                return True  # higher-priority robot ahead of us — yield
+        return False
+
     def _kill_callback(self, msg: Bool) -> None:
         if msg.data and self.robot_alive:
             self.robot_alive = False
             self.get_logger().warn("Robot killed — stopping navigation")
 
     def _replan_callback(self, msg: Bool) -> None:
+        """Triggered by /replan_needed (robot death → cost map rebuilt → need to wait)."""
         if msg.data and self.robot_alive:
             self.needs_replan = True
-            # Stop immediately so the robot doesn't keep moving while replanning
+            self.map_changed = True
             self.pub_cmd_vel.publish(Twist())
-            self.get_logger().info("Replan requested — stopping and replanning")
+            self.get_logger().info("Map-change replan requested — will wait for rebuild")
+
+    def _whca_replan_callback(self, msg: Bool) -> None:
+        """Triggered by whca_replan (WHCA* sliding window — no map change, no wait needed)."""
+        if msg.data and self.robot_alive:
+            self.needs_replan = True
+            self.pub_cmd_vel.publish(Twist())
+            self.get_logger().info("WHCA* replan requested — replanning")
 
     def callback_goal_pose(self, msg):
         self.goal_pose = numpy.asarray([msg.pose.position.x, msg.pose.position.y])
@@ -152,6 +236,13 @@ class PurePursuitNode(Node):
         self.goal_pose = numpy.asarray([0.0,0.0])
         self.robot_alive = True
         self.needs_replan = False
+        self.map_changed = False
+        # Reactive yield: stop when a higher-priority robot is too close.
+        # WHCA* gives MOSTLY-disjoint plans; this layer prevents collisions
+        # when plans converge briefly at chokepoints.  Other robots' positions
+        # are queried via TF (map frame) inside _should_yield.
+        self._robot_name = self.get_namespace().lstrip('/')
+        self._priorities = ROBOT_NAMES[:]
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.declare_parameter('v_max', 0.5)
@@ -164,9 +255,19 @@ class PurePursuitNode(Node):
         self.clt_smooth_path = self.create_client(ProcessPath, 'path_planning/smooth_path')
         self.create_subscription(Bool, 'kill', self._kill_callback, 10)
         self.create_subscription(Bool, '/replan_needed', self._replan_callback, 10)
+        self.create_subscription(Bool, 'whca_replan', self._whca_replan_callback, 10)
+        # Priority order for reactive yield (positions queried via TF inside
+        # _should_yield, so no need to subscribe to other robots' /odom).
+        self.create_subscription(String, '/robot_priorities',
+            lambda msg: setattr(self, '_priorities', msg.data.split(',')), 10)
         self.pub_cmd_vel = self.create_publisher(Twist, 'cmd_vel', 1)
+        _latched = QoSProfile(
+            depth=1,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            reliability=ReliabilityPolicy.RELIABLE,
+        )
         self.pub_goal_reached = self.create_publisher(Bool, 'navigation/goal_reached', 1)
-        self.sub_goal_pose = self.create_subscription(PoseStamped, 'goal_pose', self.callback_goal_pose, 1)
+        self.sub_goal_pose = self.create_subscription(PoseStamped, 'goal_pose', self.callback_goal_pose, _latched)
 
     def spin(self):
         robot_pose_tf_ready = False
@@ -208,9 +309,30 @@ class PurePursuitNode(Node):
                     continue   # robot is dead — ignore new goals
                 if self.new_goal_pose:
                     self.new_goal_pose = False
+                    # Don't plan immediately — wait for the coordinator's staggered
+                    # whca_replan so higher-priority robots publish their reservations
+                    # first.  Timeout 3 s as fallback (independent mode / no coordinator).
+                    deadline = time.monotonic() + 3.0
+                    while rclpy.ok() and not self.needs_replan and time.monotonic() < deadline:
+                        rclpy.spin_once(self, timeout_sec=0.1)
+                    if not self.needs_replan:
+                        self.get_logger().info("Coordinator timeout — planning independently")
+                    self.needs_replan = False
+                    state = SM_PLAN_PATH
+                elif self.needs_replan and numpy.linalg.norm(self.goal_pose) > 0.01:
+                    # Coordinator triggered a replan while stuck here (e.g. after empty path).
+                    self.needs_replan = False
                     state = SM_PLAN_PATH
 
             elif state == SM_PLAN_PATH:
+                # Kill signal may arrive during the replan sleep — bail out if so.
+                if not self.robot_alive:
+                    state = SM_WAIT_FOR_NEW_GOAL
+                    continue
+                # Clear any replan flags accumulated while entering this state.
+                # We are planning right now — a concurrent replan signal is redundant.
+                self.needs_replan = False
+                self.map_changed  = False
                 self.get_logger().info("Trying to plan path from" + str(self.robot_pose) + " to "+ str(self.goal_pose))
                 request = GetPlan.Request()
                 request.start.pose.position.x = self.robot_pose[0]
@@ -219,6 +341,10 @@ class PurePursuitNode(Node):
                 request.goal.pose.position.y = self.goal_pose[1]
                 future = self.clt_plan_path.call_async(request)
                 rclpy.spin_until_future_complete(self, future)
+                # Kill signal might have arrived during spin_until_future_complete.
+                if not self.robot_alive:
+                    state = SM_WAIT_FOR_NEW_GOAL
+                    continue
                 path = future.result().plan
                 self.get_logger().info("Path planned with " + str(len(path.poses)) + " points")
                 state = SM_SMOOTH_PATH
@@ -243,20 +369,32 @@ class PurePursuitNode(Node):
                 tol   = self.get_parameter('tol').get_parameter_value().double_value
                 self.get_logger().info("Following path with [v_max, w_max, alpha, beta, tol]="+str([v_max, w_max, alpha, beta, tol]))
                 path_points = [numpy.asarray([p.pose.position.x, p.pose.position.y]) for p in path.poses]
+                if not path_points:
+                    self.get_logger().warn("Empty path — no solution found, waiting for new goal")
+                    state = SM_WAIT_FOR_NEW_GOAL
+                    continue
                 self.pure_pursuit(path_points, alpha, beta, v_max, w_max, tol)
                 self.pub_cmd_vel.publish(Twist())
-                if self.needs_replan:
-                    # A teammate died — stop, wait for updated map, then replan
-                    self.needs_replan = False
-                    self.pub_cmd_vel.publish(Twist())  # ensure stopped
-                    self.get_logger().info("Replanning due to map change (teammate died) — waiting for updated map...")
-                    self.get_clock().sleep_for(Duration(seconds=1.5))  # let cost_map publish new map
-                    self.get_logger().info("Replanning now")
-                    state = SM_PLAN_PATH
-                elif not self.robot_alive:
-                    # Killed during path following — do NOT publish goal_reached
+                goal_reached = numpy.linalg.norm(self.robot_pose - path_points[-1]) < tol * 2
+                if not self.robot_alive:
                     self.get_logger().info("Robot killed during path following — not publishing goal_reached")
                     state = SM_WAIT_FOR_NEW_GOAL
+                elif goal_reached:
+                    # Reached the actual goal — ignore any pending replan requests
+                    self.needs_replan = False
+                    self.pub_goal_reached.publish(Bool(data=True))
+                    self.get_logger().info("Global goal point reached")
+                    state = SM_SAVE_DATA
+                elif self.needs_replan:
+                    self.needs_replan = False
+                    self.pub_cmd_vel.publish(Twist())
+                    if self.map_changed:
+                        self.map_changed = False
+                        self.get_logger().info("Replanning — waiting for map rebuild after robot death...")
+                        self.get_clock().sleep_for(Duration(seconds=1.5))
+                    else:
+                        self.get_logger().info("Replanning (WHCA* window update)")
+                    state = SM_PLAN_PATH
                 else:
                     self.pub_goal_reached.publish(Bool(data=True))
                     self.get_logger().info("Global goal point reached")

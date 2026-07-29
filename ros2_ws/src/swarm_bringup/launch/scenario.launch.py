@@ -13,16 +13,20 @@ towers  Staggered cylindrical towers (rust/brick) in a 4-row slalom.
 rocks   Scattered boulders (brown spheres + dark-grey rotated boxes).
         Robots navigate irregular terrain between x=-9 and x=9.
 
-maze    Two-corridor maze (sandstone walls, orange chicane barriers).
-        Top corridor (y>0): barrier at x=2 forces north detour past y=3.5.
-        Bottom corridor (y<0): barrier at x=-2 forces south detour past y=-3.5.
+maze    Three-corridor maze with central convergence zone.
+        North/middle/south corridors separated by sandstone walls with
+        single central gaps (x=-1..1).  Each corridor has multiple orange
+        chicanes forcing slalom navigation.  Goal zone sits in the east
+        end of the middle corridor, so alvin (north) and simon (south)
+        must enter the middle through central gaps — classic MAPF stress
+        test where WHCA* coordination becomes essential.
 
 All scenarios have a closed perimeter (grey-blue boundary walls) so robots
 cannot escape the arena.
 
 All robots:
   alvin — red   teodoro — green   simon — blue
-  Start at x=-8 (west side), goal zone (green) at x=8 (east side).
+  Start at x=-8 (west side), goal zone (green) on the east side.
 """
 
 import math
@@ -73,16 +77,30 @@ _ROBOTS_OPEN = [
 ]
 
 _ROBOTS_MAZE = [
-    # Two robots in top corridor, one in bottom
-    {'name': 'alvin',   'color': '0.9 0.1 0.1 1.0', 'x': -8.0, 'y':  2.5, 'z': 0.5, 'yaw': 0.0},
-    {'name': 'simon',   'color': '0.1 0.1 0.9 1.0', 'x': -8.0, 'y':  1.0, 'z': 0.5, 'yaw': 0.0},
-    {'name': 'teodoro', 'color': '0.1 0.8 0.1 1.0', 'x': -8.0, 'y': -2.5, 'z': 0.5, 'yaw': 0.0},
+    # One robot per corridor — north / middle / south.
+    # Goal zone sits in middle corridor east end, so alvin & simon must
+    # cross dividers via the central gaps to converge with teodoro.
+    # Spawn y picked at the corridor centre so neither chicane catches the
+    # robot on its very first step.
+    {'name': 'alvin',   'color': '0.9 0.1 0.1 1.0', 'x': -8.0, 'y':  5.0, 'z': 0.5, 'yaw': 0.0},
+    {'name': 'teodoro', 'color': '0.1 0.8 0.1 1.0', 'x': -8.0, 'y':  0.0, 'z': 0.5, 'yaw': 0.0},
+    {'name': 'simon',   'color': '0.1 0.1 0.9 1.0', 'x': -8.0, 'y': -5.0, 'z': 0.5, 'yaw': 0.0},
 ]
 
 SCENARIO_ROBOTS = {
     'towers': _ROBOTS_OPEN,
     'rocks':  _ROBOTS_OPEN,
     'maze':   _ROBOTS_MAZE,
+}
+
+# ── Fixed goal zones per scenario ─────────────────────────────────────────────
+# Drives both the GNFC allocator (when planner != 'independent') and the
+# green goal marker shown in Gazebo/RViz.  Picked so robots get the same
+# deterministic goals every run — crucial for reproducible WHCA* tests.
+SCENARIO_GOAL_ZONES = {
+    'towers': {'x_min': 7.5, 'x_max': 9.0, 'y_min': -1.5, 'y_max': 1.5, 'spacing': 0.8},
+    'rocks':  {'x_min': 8.0, 'x_max': 9.0, 'y_min': -1.5, 'y_max': 1.5, 'spacing': 0.8},
+    'maze':   {'x_min': 7.5, 'x_max': 9.0, 'y_min': -1.0, 'y_max': 0.6, 'spacing': 0.8},
 }
 
 # ── SDF primitive helpers ──────────────────────────────────────────────────────
@@ -161,6 +179,15 @@ def _goal_marker(name='goal', cx=8.0, cy=0.0, lx=1.0, ly=10.0):
     return _box(name, cx, cy, 0.75, lx, ly, 1.5, color=C_GOAL)
 
 
+def _goal_marker_for_zone(name, zone):
+    """Render a goal-zone rectangle from a SCENARIO_GOAL_ZONES entry."""
+    cx = (zone['x_min'] + zone['x_max']) / 2.0
+    cy = (zone['y_min'] + zone['y_max']) / 2.0
+    lx = zone['x_max'] - zone['x_min']
+    ly = zone['y_max'] - zone['y_min']
+    return _box(name, cx, cy, 0.75, lx, ly, 1.5, color=C_GOAL)
+
+
 # ── Scenario geometry ──────────────────────────────────────────────────────────
 
 def _build_towers(show_goals=False):
@@ -185,7 +212,7 @@ def _build_towers(show_goals=False):
              for i, (x, y) in enumerate(positions)]
     parts += _boundary_walls()
     if show_goals:
-        parts.append(_goal_marker(cy=0.0, ly=ARENA_Y * 2))
+        parts.append(_goal_marker_for_zone('goal', SCENARIO_GOAL_ZONES['towers']))
     return '\n'.join(parts)
 
 
@@ -225,57 +252,90 @@ def _build_rocks(show_goals=False):
                           lx, ly, lz, yaw=math.radians(yd), color=C_ROCK_BOX))
     parts += _boundary_walls()
     if show_goals:
-        parts.append(_goal_marker(cy=0.0, ly=ARENA_Y * 2))
+        parts.append(_goal_marker_for_zone('goal', SCENARIO_GOAL_ZONES['rocks']))
     return '\n'.join(parts)
 
 
 def _build_maze(show_goals=False):
-    """Two-corridor maze: sandstone structural walls, orange chicane barriers.
+    """Three-corridor maze with forced slalom and central convergence zone.
 
-    Layout (top view):
+    Each corridor (north / middle / south) has FOUR alternating chicane
+    bars (S-N-S-N pattern in north, mirrored in south).  Bars are 2.0 m
+    tall — after the cost_map's 0.5 m inflation the south-attached and
+    north-attached bars' impassable zones overlap, so a robot **cannot**
+    cross the corridor in a straight line.  It must zig-zag between
+    bars with ~1 m amplitude.
 
-        y=+6  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓  boundary (grey-blue)
-        y=+5  ════════════════════════  north corridor wall (sandstone)
-              [alvin, simon →]  ┃ orange barrier x=+2, y=0..3.5
-                                ┃ gap y=3.5..5 → detour north
-        y= 0  ════════════════════════  central divider (sandstone)
-              ┃ orange barrier x=-2, y=-3.5..0
-              ┃ gap y=-5..-3.5 → detour south
-        y=-5  ════════════════════════  south corridor wall (sandstone)
-        y=-6  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓  boundary (grey-blue)
-              x=-10             x=+10
+    Dividers leave a single 2 m gap at x=-1..1 — effectively 1 m wide
+    after corner inflation, narrow enough that two robots cannot pass
+    simultaneously → WHCA* must sequence them.
 
-    Robots in the top corridor (alvin, simon) must squeeze through the
-    1.5 m gap north of the orange barrier — prime MAPF conflict zone.
-    Teodoro in the bottom corridor has a symmetric challenge at x=-2.
+    Layout (top view, S = glued to south side, N = north):
+
+        y=+6  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓
+              [alvin →]   ←y=+5
+                  ║N            ║N            bar_n2,n4 (x=-3,+6;  y=4..6)
+              ║S        ║S                   bar_n1,n3 (x=-6,+3; y=2..4)
+        y=+2  ═══════════ GAP ═══════════════
+                  ║N            ║N            bar_m1,m3 (x=-6,+3; y=0..2)
+              [teodoro →]
+                          ║S        ║S        bar_m2,m4 (x=-3,+6; y=-2..0)
+        y=-2  ═══════════ GAP ═══════════════
+              ║N        ║N                   bar_s1,s3 (x=-6,+3; y=-4..-2)
+                  ║S            ║S            bar_s2,s4 (x=-3,+6; y=-6..-4)
+              [simon →]   ←y=-5
+        y=-6  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓
+              x=-10                     x=+10
+
+    Goal zone: x∈[7.5,9.0], y∈[-1.0,1.0] — east end of middle corridor.
     """
     W = ARENA_X   # 10
     h = WALL_H    # 1.5
     t = WALL_T    # 0.2
     span = W * 2  # 20
 
+    # Bar length tuned so south- and north-attached chicanes leave DISJOINT
+    # passable bands (each 1 m tall for the robot centre, with a 1 m
+    # uncrossable gap between them).  height=2.0 m gives:
+    #   south-bar inflated y∈[1.5, 4.5] (north corridor) → free above ≥ 4.5
+    #   north-bar inflated y∈[3.5, 6.5] (north corridor) → free below ≤ 3.5
+    # so the robot must occupy y≈5 at south-bars and y≈3 at north-bars —
+    # a forced zig-zag of ~2 m amplitude across the corridor.
+    BAR = 2.0
+
     parts = [
-        # ── Structural sandstone walls (corridor boundaries + divider) ──
-        _box('wall_north',   0.0,  5.0, h/2, span, t, h, color=C_MAZE_WALL),
-        _box('wall_south',   0.0, -5.0, h/2, span, t, h, color=C_MAZE_WALL),
-        _box('wall_center',  0.0,  0.0, h/2, span, t, h, color=C_MAZE_WALL),
+        # ── Horizontal sandstone dividers with central 2 m gaps ──
+        _box('wall_n_left',  -5.5,  2.0, h/2, 9.0, t, h, color=C_MAZE_WALL),
+        _box('wall_n_right',  5.5,  2.0, h/2, 9.0, t, h, color=C_MAZE_WALL),
+        _box('wall_s_left',  -5.5, -2.0, h/2, 9.0, t, h, color=C_MAZE_WALL),
+        _box('wall_s_right',  5.5, -2.0, h/2, 9.0, t, h, color=C_MAZE_WALL),
 
-        # ── Orange chicane barriers ──
-        # Top barrier: x=+2, y=0 to y=+3.5  (gap: y=3.5..5, width=1.5 m)
-        _box('bar_top',  2.0,  1.75, h/2, t, 3.5, h, color=C_MAZE_BAR),
-        # Bottom barrier: x=-2, y=-3.5 to y=0  (gap: y=-5..-3.5, width=1.5 m)
-        _box('bar_bot', -2.0, -1.75, h/2, t, 3.5, h, color=C_MAZE_BAR),
+        # ── North corridor: S, N, S, N pattern (4 chicanes) ──
+        _box('bar_n1', -6.0,  3.0, h/2, t, BAR, h, color=C_MAZE_BAR),  # S, y∈[2,4]
+        _box('bar_n2', -3.0,  5.0, h/2, t, BAR, h, color=C_MAZE_BAR),  # N, y∈[4,6]
+        _box('bar_n3',  3.0,  3.0, h/2, t, BAR, h, color=C_MAZE_BAR),  # S
+        _box('bar_n4',  6.0,  5.0, h/2, t, BAR, h, color=C_MAZE_BAR),  # N
 
-        # ── Grey-blue perimeter (outer boundary, outside corridors) ──
+        # ── Middle corridor: N, S, N, S (mirror; ensures teodoro zig-zags) ──
+        _box('bar_m1', -6.0,  1.0, h/2, t, BAR, h, color=C_MAZE_BAR),  # N, y∈[0,2]
+        _box('bar_m2', -3.0, -1.0, h/2, t, BAR, h, color=C_MAZE_BAR),  # S, y∈[-2,0]
+        _box('bar_m3',  3.0,  1.0, h/2, t, BAR, h, color=C_MAZE_BAR),  # N
+        _box('bar_m4',  6.0, -1.0, h/2, t, BAR, h, color=C_MAZE_BAR),  # S
+
+        # ── South corridor: N, S, N, S (mirror of north along y=0) ──
+        _box('bar_s1', -6.0, -3.0, h/2, t, BAR, h, color=C_MAZE_BAR),  # N, y∈[-4,-2]
+        _box('bar_s2', -3.0, -5.0, h/2, t, BAR, h, color=C_MAZE_BAR),  # S, y∈[-6,-4]
+        _box('bar_s3',  3.0, -3.0, h/2, t, BAR, h, color=C_MAZE_BAR),  # N
+        _box('bar_s4',  6.0, -5.0, h/2, t, BAR, h, color=C_MAZE_BAR),  # S
+
+        # ── Grey-blue perimeter ──
         _box('bnd_west', -W, 0.0, h/2, t, ARENA_Y*2, h, color=C_BOUNDARY),
         _box('bnd_east',  W, 0.0, h/2, t, ARENA_Y*2, h, color=C_BOUNDARY),
         _box('bnd_north_out', 0.0,  ARENA_Y, h/2, span+t, t, h, color=C_BOUNDARY),
         _box('bnd_south_out', 0.0, -ARENA_Y, h/2, span+t, t, h, color=C_BOUNDARY),
-
     ]
     if show_goals:
-        parts.append(_goal_marker('goal_top', cx=8.5, cy=2.5, lx=1.0, ly=4.5))
-        parts.append(_goal_marker('goal_bot', cx=8.5, cy=-2.5, lx=1.0, ly=4.5))
+        parts.append(_goal_marker_for_zone('goal', SCENARIO_GOAL_ZONES['maze']))
     return '\n'.join(parts)
 
 
@@ -405,11 +465,27 @@ def _build_scenario_map_image(scenario):
             _paint_rotated_rect(grid, x, y, lx, ly, math.radians(yaw_deg))
 
     elif scenario == 'maze':
-        _paint_rect(grid, 0.0, 5.0, ARENA_X * 2.0, WALL_T)
-        _paint_rect(grid, 0.0, -5.0, ARENA_X * 2.0, WALL_T)
-        _paint_rect(grid, 0.0, 0.0, ARENA_X * 2.0, WALL_T)
-        _paint_rect(grid, 2.0, 1.75, WALL_T, 3.5)
-        _paint_rect(grid, -2.0, -1.75, WALL_T, 3.5)
+        BAR = 2.0
+        # Horizontal dividers with central 2 m gaps (x∈[-1,1] open)
+        _paint_rect(grid, -5.5,  2.0, 9.0, WALL_T)
+        _paint_rect(grid,  5.5,  2.0, 9.0, WALL_T)
+        _paint_rect(grid, -5.5, -2.0, 9.0, WALL_T)
+        _paint_rect(grid,  5.5, -2.0, 9.0, WALL_T)
+        # North corridor — 4 alternating chicanes (S, N, S, N)
+        _paint_rect(grid, -6.0,  3.0, WALL_T, BAR)
+        _paint_rect(grid, -3.0,  5.0, WALL_T, BAR)
+        _paint_rect(grid,  3.0,  3.0, WALL_T, BAR)
+        _paint_rect(grid,  6.0,  5.0, WALL_T, BAR)
+        # Middle corridor — N, S, N, S
+        _paint_rect(grid, -6.0,  1.0, WALL_T, BAR)
+        _paint_rect(grid, -3.0, -1.0, WALL_T, BAR)
+        _paint_rect(grid,  3.0,  1.0, WALL_T, BAR)
+        _paint_rect(grid,  6.0, -1.0, WALL_T, BAR)
+        # South corridor — N, S, N, S (mirror of north)
+        _paint_rect(grid, -6.0, -3.0, WALL_T, BAR)
+        _paint_rect(grid, -3.0, -5.0, WALL_T, BAR)
+        _paint_rect(grid,  3.0, -3.0, WALL_T, BAR)
+        _paint_rect(grid,  6.0, -5.0, WALL_T, BAR)
 
     return grid
 
@@ -663,7 +739,11 @@ def launch_setup(context, *args, **kwargs):
             executable='whca_coordinator',
             name='whca_coordinator',
             output='screen',
-            parameters=[{'use_sim_time': True}],
+            parameters=[{
+                'use_sim_time': True,
+                'replan_period_sec': 3.0,
+                'stagger_sec': 1.0,
+            }],
         ))
         for robot in robots:
             nodes.append(GroupAction([
@@ -675,12 +755,49 @@ def launch_setup(context, *args, **kwargs):
                     output='screen',
                     parameters=[{
                         'robot_name': robot['name'],
-                        'window_size': 10,
+                        'window_size': 80,
                         'diagonals': True,
                         'use_sim_time': True,
                     }],
                 ),
             ]))
+
+    # GNFC + visualizer auto-launch for coordinated modes — uses the fixed
+    # per-scenario goal zone and feeds each robot's spawn position so the
+    # very first allocation tick is deterministic (no (0,0) tie at startup).
+    if planner in ('whca', 'cbs'):
+        zone = SCENARIO_GOAL_ZONES[scenario]
+        gnfc_params = {
+            'use_sim_time': True,
+            'goal_zone_x_min': zone['x_min'],
+            'goal_zone_x_max': zone['x_max'],
+            'goal_zone_y_min': zone['y_min'],
+            'goal_zone_y_max': zone['y_max'],
+            'goal_grid_spacing': zone['spacing'],
+        }
+        for robot in robots:
+            gnfc_params[f"initial_x_{robot['name']}"] = float(robot['x'])
+            gnfc_params[f"initial_y_{robot['name']}"] = float(robot['y'])
+        nodes.append(Node(
+            package='mapf_coordinator',
+            executable='gnfc_goal_allocator',
+            name='gnfc_goal_allocator',
+            output='screen',
+            parameters=[gnfc_params],
+        ))
+        nodes.append(Node(
+            package='mapf_coordinator',
+            executable='goal_zone_visualizer',
+            name='goal_zone_visualizer',
+            output='screen',
+            parameters=[{
+                'use_sim_time': True,
+                'goal_zone_x_min': zone['x_min'],
+                'goal_zone_x_max': zone['x_max'],
+                'goal_zone_y_min': zone['y_min'],
+                'goal_zone_y_max': zone['y_max'],
+            }],
+        ))
 
     for robot, urdf in zip(robots, robots_urdf):
         name = robot['name']

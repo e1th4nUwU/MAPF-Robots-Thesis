@@ -14,9 +14,22 @@ while avoiding collisions with both obstacles and other robots.
 
 | Scenario | Description |
 |---|---|
-| `towers` | Cylindrical towers - open-field navigation with obstacles |
-| `rocks`  | Scattered rocks - irregular terrain simulation |
-| `maze`   | Two-corridor maze - MAPF conflicts in narrow spaces |
+| `towers` | 4-row slalom of cylindrical towers — open-field navigation with conflicts at narrow gaps |
+| `rocks`  | Scattered boulders + rotated rock boxes — irregular terrain that forces path interleaving |
+| `maze`   | Three-corridor maze with central convergence zone — robots from N/M/S corridors must funnel through 2 m gaps and converge at a single goal area (prime MAPF stress test) |
+
+### Fixed Goal Zones per Scenario
+
+Each scenario has a **deterministic goal area** (the green rectangle in RViz/Gazebo).
+When using `planner:=whca` or `planner:=cbs`, the **GNFC allocator** auto-launches
+with that zone and each robot's spawn position, so goal assignment is reproducible
+across runs — essential for testing WHCA*/CBS behaviour.
+
+| Scenario | Goal Zone (x_min, x_max, y_min, y_max) | Spacing | Notes |
+|---|---|---|---|
+| `towers` | (7.5, 9.0, -1.5, 1.5) | 0.8 m | Wide vertical strip on east side |
+| `rocks`  | (8.0, 9.0, -1.5, 1.5) | 0.8 m | Shifted east (x_min=8.0) to clear rock-box inflation at x≈7.7 |
+| `maze`   | (7.5, 9.0, -1.0, 0.6) | 0.8 m | y_max=0.6 keeps goals below divider inflation (y=1.4 blocked with 0.6 m inflation) |
 
 ## Stack
 
@@ -102,6 +115,35 @@ ros2 launch swarm_bringup scenario.launch.py scenario:=towers show_gazebo_goals:
 ros2 launch swarm_bringup scenario.launch.py scenario:=maze show_gazebo_goals:=true planner:=whca
 ```
 
+### Testing WHCA* coordination (rocks / maze)
+
+When you pass `planner:=whca`, the scenario launch **automatically** starts:
+
+- `priority_manager` (publishes `/robot_priorities`)
+- `whca_coordinator` (debounced replans, staggered by priority)
+- One `whca_star` per robot (space-time A* serving `path_planning/plan_path`)
+- `gnfc_goal_allocator` configured with the scenario's fixed goal zone **and each robot's spawn position** (so the first allocation tick is deterministic — no `(0, 0)` tie at startup)
+- `goal_zone_visualizer` (green rectangle in RViz / Gazebo)
+
+**Recommended test commands:**
+
+```bash
+# Rocks — irregular terrain, plenty of natural conflicts
+ros2 launch swarm_bringup scenario.launch.py scenario:=rocks planner:=whca show_gazebo_goals:=true
+
+# Maze — three corridors converging at a single goal zone in the middle
+ros2 launch swarm_bringup scenario.launch.py scenario:=maze planner:=whca show_gazebo_goals:=true
+
+# Baseline (no coordination) for comparison
+ros2 launch swarm_bringup scenario.launch.py scenario:=rocks planner:=independent
+ros2 launch swarm_bringup scenario.launch.py scenario:=maze planner:=independent
+```
+
+What each scenario stresses:
+
+- **rocks** — robots all start spread on the west (y ≈ ±1.5, 0) and converge on the east-side goal strip.  Scattered rocks block straight paths and force interleaving in the middle of the arena.
+- **maze** — alvin starts in the north corridor (y=+4), teodoro in the middle (y=0), simon in the south (y=-4).  The goal is a single zone inside the middle corridor on the east, so alvin and simon must descend / ascend through 2 m central gaps (x ≈ 0) and merge with teodoro on the way east.  Three chicanes per corridor add a slalom on top.
+
 ### Send Navigation Goals
 
 Each robot has its own namespaced `goal_pose` topic. After launching a scenario:
@@ -121,9 +163,11 @@ RViz shows each robot's planned path in its color (red = alvin, green = teodoro,
 
 ### Automated Goal Zone Assignment (GNFC)
 
-Instead of manually sending individual goals, use **Greedy Nearest-Free-Cell (GNFC)** to automatically assign unique goal points within a rectangular zone. This is useful for testing multi-robot coordination.
+**Greedy Nearest-Free-Cell (GNFC)** assigns each robot a unique goal point within a rectangular zone (nearest unassigned cell wins).
 
-**Two-terminal workflow:**
+With `planner:=whca` or `planner:=cbs`, GNFC is **launched automatically** with the scenario's fixed goal zone and each robot's spawn position — no extra terminal needed.
+
+For `planner:=independent` (or to override the zone), run GNFC manually in a second terminal:
 
 ```bash
 # Terminal 1 — launch the scenario
@@ -131,33 +175,15 @@ ros2 launch swarm_bringup scenario.launch.py scenario:=towers planner:=independe
 
 # Terminal 2 — define goal zone and auto-assign goals
 ros2 launch mapf_coordinator goal_zone.launch.py \
-  x_min:=7.5 x_max:=9.0 y_min:=-1.0 y_max:=1.0 spacing:=0.3
+  x_min:=7.5 x_max:=9.0 y_min:=-1.0 y_max:=1.0 spacing:=0.8
 ```
 
 **What happens:**
-- GNFC allocator automatically assigns each robot a unique goal point within the zone
+- GNFC allocator assigns each robot a unique goal point within the zone
 - Visualizer displays a **green rectangle** in RViz and Gazebo showing the goal zone boundaries
 - Each robot receives its goal via `/{robot}/goal_pose` and begins navigation
 
-**Customize the goal zone by scenario:**
-
-Towers (open field):
-```bash
-ros2 launch mapf_coordinator goal_zone.launch.py \
-  x_min:=7.5 x_max:=9.0 y_min:=-1.0 y_max:=1.0 spacing:=0.3
-```
-
-Rocks (tighter zone):
-```bash
-ros2 launch mapf_coordinator goal_zone.launch.py \
-  x_min:=8.0 x_max:=8.8 y_min:=-0.8 y_max:=0.8 spacing:=0.2
-```
-
-Maze (spread out):
-```bash
-ros2 launch mapf_coordinator goal_zone.launch.py \
-  x_min:=6.0 x_max:=8.0 y_min:=-2.0 y_max:=2.0 spacing:=0.4
-```
+**Why spawn positions matter:** every robot's `/odom` is published in its own local frame whose origin is the spawn point.  Without seeding the allocator with each robot's spawn pose, the first allocation tick (which can fire before any `/odom` message arrives) sees all robots at `(0, 0)` and assigns goals by tie-break, producing different paths every launch.  The scenario-wide auto-launch supplies these as `initial_x_<robot>` / `initial_y_<robot>` parameters.
 
 **Parameters:**
 - `x_min`, `x_max`: zone boundaries in X (metres)

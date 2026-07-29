@@ -21,7 +21,7 @@ import rclpy.duration
 from rclpy.node import Node
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Bool
-from geometry_msgs.msg import Point
+from geometry_msgs.msg import Point, Twist
 from navig_msgs.msg import RobotHealth
 from tf2_ros import TransformException
 from tf2_ros.buffer import Buffer
@@ -34,7 +34,10 @@ ROBOT_NAMES = ['alvin', 'teodoro', 'simon']
 MOVEMENT_THRESHOLD = 0.05
 
 # Seconds without movement before a robot is declared dead.
-DEATH_TIMEOUT = 3.0
+# Must exceed: replan-sleep (1.5 s) + worst-case 90° turn (3.1 s) = 4.6 s baseline.
+# Increased to 10 s to allow up to 3 WHCA* replan cycles (3 s each) of legitimate
+# yielding at a narrow bottleneck before declaring the robot genuinely stuck.
+DEATH_TIMEOUT = 10.0
 
 
 class RobotState:
@@ -91,6 +94,14 @@ class SwarmHealthMonitor(Node):
                 Bool,
                 f'/{name}/kill',
                 lambda msg, n=name: self._kill_callback(msg, n),
+                10,
+            )
+            # cmd_vel resets the death timer when the robot is actively commanded
+            # (e.g. spinning in place during a replan turn — no xy change but alive).
+            self.create_subscription(
+                Twist,
+                f'/{name}/cmd_vel',
+                lambda msg, n=name: self._cmd_vel_callback(msg, n),
                 10,
             )
             self.get_logger().info(f'Subscribed to /{name}/odom')
@@ -154,6 +165,13 @@ class SwarmHealthMonitor(Node):
             )
             # Publish immediately — do not wait for the 0.5s timer tick
             self._publish_health(robot_name, state, now)
+
+    def _cmd_vel_callback(self, msg: Twist, robot_name: str):
+        """Reset death timer while the robot is being commanded (including pure rotation)."""
+        if abs(msg.linear.x) > 0.01 or abs(msg.angular.z) > 0.01:
+            state = self.states[robot_name]
+            if not state.is_killed:
+                state.last_moved_time = self.get_clock().now()
 
     def _goal_reached_callback(self, msg: Bool, robot_name: str):
         """Robot reached its goal — suppress death check while stationary at goal."""

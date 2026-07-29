@@ -19,10 +19,14 @@ SCENARIO_STARTS = {
         'teodoro': (-8.0, 0.0),
         'simon': (-8.0, -1.5),
     },
+    # Must match _ROBOTS_MAZE in scenario.launch.py exactly — these starts
+    # are added back to the robots' local odometry (which starts at 0,0)
+    # to reconstruct their pose in the map frame for /odom_map.
+    # Any mismatch puts the Odometry arrows at the wrong RViz location.
     'maze': {
-        'alvin': (-8.0, 2.5),
-        'simon': (-8.0, 1.0),
-        'teodoro': (-8.0, -2.5),
+        'alvin':   (-8.0,  5.0),
+        'teodoro': (-8.0,  0.0),
+        'simon':   (-8.0, -5.0),
     },
 }
 
@@ -87,7 +91,7 @@ class SwarmVizBridge(Node):
             m.color.a = 0.45
             return m
 
-        is_maze = abs(self.starts['alvin'][1] - 2.5) < 1e-6
+        is_maze = abs(self.starts['alvin'][1] - 5.0) < 1e-6
         if is_maze:
             markers.markers.append(goal_marker(0, 8.5, 2.5, 1.0, 4.5))
             markers.markers.append(goal_marker(1, 8.5, -2.5, 1.0, 4.5))

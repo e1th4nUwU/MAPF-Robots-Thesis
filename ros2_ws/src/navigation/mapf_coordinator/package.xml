@@ -13,6 +13,7 @@
   <depend>navig_msgs</depend>
   <depend>gazebo_msgs</depend>
   <depend>visualization_msgs</depend>
+  <depend>tf2_ros</depend>
 
   <buildtool_depend>ament_python</buildtool_depend>
   <test_depend>ament_copyright</test_depend>

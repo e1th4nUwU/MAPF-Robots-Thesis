@@ -5,21 +5,42 @@ from nav_msgs.srv import GetPlan, GetMap
 from geometry_msgs.msg import PoseStamped, Pose, Point
 from std_msgs.msg import String
 from navig_msgs.msg import SpaceTimeReservation
+from tf2_ros import TransformException
+from tf2_ros.buffer import Buffer
+from tf2_ros.transform_listener import TransformListener
 
 ROBOT_NAMES = ['alvin', 'teodoro', 'simon']
+
+# Robot footprint from justina_base.xacro:
+#   body 0.45×0.35 m, wheels add 0.04 m → total width 0.39 m
+#   circumscribed radius = sqrt(0.225²+0.195²) ≈ 0.30 m
+#   Minimum cells to cover physical radius: ceil(0.30/0.05) = 6
+# +1 cell tracking buffer → SAFETY_CELLS = 7 (0.35 m per robot,
+# 0.70 m centre-to-centre clearance). Map resolution = 0.05 m/cell.
+SAFETY_CELLS = 7   # 7 cells × 0.05 m = 0.35 m margin per robot
+
+# Reservations older than RESERVATION_TTL_SEC are considered stale and ignored.
+# When a robot dies it stops publishing, so its entries expire automatically.
+RESERVATION_TTL_SEC = 12.0
+
+# Lookahead window for spatial blocking: only block cells within this many steps
+# of a robot's current position along its reserved path.  40 cells × 0.05 m = 2 m.
+# Cells beyond this are open for lower-priority robots to plan through (they'll
+# arrive there after the higher-priority robot has moved on).
+# Physical close-range safety is still enforced by EMERGENCY_STOP_M / YIELD_DISTANCE_M.
+LOOKAHEAD_CELLS = 40
 
 class WhcaStarNode(Node):
     def __init__(self):
         super().__init__('whca_star')
         self.declare_parameter('robot_name', '')
-        self.declare_parameter('window_size', 10)
+        self.declare_parameter('window_size', 10)  # kept for param compatibility; unused
         self.declare_parameter('diagonals', False)
 
         self._robot_name  = self.get_parameter('robot_name').value
-        self._window      = self.get_parameter('window_size').value
         self._diagonals   = self.get_parameter('diagonals').value
 
-        # Reservations table: {robot_name: SpaceTimeReservation}
+        # Reservations table: {robot_name: (SpaceTimeReservation, timestamp)}
         self._reservations = {}
 
         # Priority list (farther from goal = higher priority)
@@ -49,7 +70,16 @@ class WhcaStarNode(Node):
             SpaceTimeReservation, '/space_time_reservations', 10)
 
         self._last_path = Path()
-        self.create_timer(0.5, lambda: self._path_pub.publish(self._last_path))
+        self._last_reservation_msg = None
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+        # Republish the path every 0.5 s so RViz keeps it visible, but TRIM
+        # the already-traversed portion first.  Otherwise the arrows show the
+        # plan from where the robot WAS at plan time (up to replan_period=3 s
+        # behind), making the path look offset from the robot in Gazebo.
+        self.create_timer(0.5, self._republish_trimmed_path)
+        # Re-publish last reservation every 4 s so it never expires (TTL = 12 s).
+        self.create_timer(4.0, self._heartbeat_reservation)
 
         self.get_logger().info(f'whca_star [{self._robot_name}] listo')
 
@@ -66,9 +96,8 @@ class WhcaStarNode(Node):
     # Coordination callbacks
     # ------------------------------------------------------------------
     def _reservation_cb(self, msg: SpaceTimeReservation):
-        # Store reservations from OTHER robots only
         if msg.robot_name != self._robot_name:
-            self._reservations[msg.robot_name] = msg
+            self._reservations[msg.robot_name] = (msg, self.get_clock().now())
 
     def _priorities_cb(self, msg: String):
         self._priorities = msg.data.split(',')
@@ -125,7 +154,7 @@ class WhcaStarNode(Node):
         msg = Path()
         msg.header.frame_id = 'map'
         msg.header.stamp = self.get_clock().now().to_msg()
-        for (r, c, _) in path_cells:
+        for (r, c) in path_cells:
             x, y = self._cell_to_world(r, c)
             msg.poses.append(
                 PoseStamped(pose=Pose(position=Point(x=x, y=y, z=0.0))))
@@ -136,18 +165,63 @@ class WhcaStarNode(Node):
         while node in came_from:
             path.insert(0, node)
             node = came_from[node]
-        path.insert(0, node)  # include start node
+        path.insert(0, node)
         return path
 
     # ------------------------------------------------------------------
     # Planning service callback
     # ------------------------------------------------------------------
+    def _nearest_free(self, start, grid):
+        """BFS from start to the nearest non-obstacle cell.
+
+        Used when the robot's current position is inside an inflated obstacle
+        (e.g. a just-declared dead robot's body covers the start cell).
+        """
+        from collections import deque
+        h, w = grid.shape
+        if grid[start[0], start[1]] <= 50:
+            return start
+        q = deque([start])
+        visited = {start}
+        while q:
+            r, c = q.popleft()
+            if grid[r, c] <= 50:
+                return (r, c)
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1),
+                            (-1, -1), (-1, 1), (1, -1), (1, 1)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < h and 0 <= nc < w and (nr, nc) not in visited:
+                    visited.add((nr, nc))
+                    q.append((nr, nc))
+        return start  # no free cell found — return original as fallback
+
     def _plan_cb(self, request, response):
-        blocked     = self._build_blocked_set()
-        start_cell  = self.world_to_cell(request.start.pose.position)
-        goal_cell   = self.world_to_cell(request.goal.pose.position)
-        self.get_logger().info(f'Planning from {start_cell} to {goal_cell}, blocked={len(blocked)} cells')
-        path_cells  = self._whca(start_cell, goal_cell, blocked)
+        blocked    = self._build_blocked_set()
+        start_cell = self.world_to_cell(request.start.pose.position)
+        goal_cell  = self.world_to_cell(request.goal.pose.position)
+
+        # Escape start if it landed inside an obstacle (e.g. dead-robot inflation
+        # covers the robot's current grid cell → all A* neighbours also blocked).
+        grid = self._get_grid()
+        if grid[start_cell[0], start_cell[1]] > 50:
+            escaped = self._nearest_free(start_cell, grid)
+            if escaped != start_cell:
+                self.get_logger().warn(
+                    f'Start {start_cell} inside obstacle — escaped to {escaped}')
+            start_cell = escaped
+
+        self.get_logger().info(
+            f'Planning from {start_cell} to {goal_cell}, '
+            f'blocked={len(blocked)} spatial cells')
+        path_cells = self._whca(start_cell, goal_cell, blocked)
+        if not path_cells and blocked:
+            # Coordinated path infeasible (narrow corridor busy with higher-priority
+            # robots).  Return empty so pure_pursuit stops and waits in
+            # SM_WAIT_FOR_NEW_GOAL; the coordinator's periodic replan will retry
+            # once the higher-priority robots have cleared the section.
+            # Do NOT fall back to uncoordinated A* — that causes physical collision.
+            self.get_logger().warn(
+                'No coordinated path — stopping to yield (will retry on next replan)')
         self.get_logger().info(f'WHCA* found path with {len(path_cells)} points')
         self._publish_reservations(path_cells)
         self._last_path = self._cells_to_path(path_cells)
@@ -155,83 +229,171 @@ class WhcaStarNode(Node):
         return response
 
     # ------------------------------------------------------------------
-    # Blocked-cell set from higher-priority robots
+    # Blocked-cell set from higher-priority robots (LOOKAHEAD SPATIAL)
+    #
+    # Why lookahead-only (not full-path) spatial blocking:
+    # Blocking an entire 300-cell planned path with SAFETY_CELLS=7 covers
+    # ~67 500 cells — in a narrow maze corridor (16 navigable cells wide)
+    # this blocks the ENTIRE corridor, making it geometrically impossible
+    # for lower-priority robots to find any path → deadlock.
+    #
+    # Lookahead fix: only block the next LOOKAHEAD_CELLS (2 m) of the
+    # higher-priority robot's path from its current position.  Cells
+    # beyond that are open — the lower-priority robot plans to arrive
+    # there AFTER the higher-priority robot has moved on.  Physical
+    # safety at close range is still enforced by EMERGENCY_STOP_M and
+    # YIELD_DISTANCE_M in pure_pursuit.
     # ------------------------------------------------------------------
     def _build_blocked_set(self):
+        """Returns a set of (r, c) spatial cells blocked by higher-priority robots.
+
+        Only blocks cells within LOOKAHEAD_CELLS steps of the robot's current
+        position along its reserved path.  This lets lower-priority robots plan
+        through corridor segments that the higher-priority robot will vacate
+        before the lower-priority robot arrives there.
+        """
         blocked = set()
         my_idx = self._priorities.index(self._robot_name) \
                  if self._robot_name in self._priorities else 999
+        now = self.get_clock().now()
 
-        for robot, res in self._reservations.items():
+        for robot, (res, timestamp) in self._reservations.items():
+            age_sec = (now - timestamp).nanoseconds / 1e9
+            if age_sec > RESERVATION_TTL_SEC:
+                continue  # stale — robot likely dead, ignore its reservations
             if robot not in self._priorities:
                 continue
-            if self._priorities.index(robot) < my_idx:
-                for x, y, t in zip(res.x_cells, res.y_cells, res.time_steps):
-                    cell = self._world_to_cell_xy(x, y)
-                    blocked.add((cell[0], cell[1], t))
+            if self._priorities.index(robot) >= my_idx:
+                continue  # equal/lower priority — this robot doesn't block us
+
+            # Find where the robot currently sits on its reserved path via TF.
+            start_idx = 0
+            try:
+                t = self.tf_buffer.lookup_transform(
+                    'map', f'{robot}/base_link', rclpy.time.Time())
+                rx = t.transform.translation.x
+                ry = t.transform.translation.y
+                min_d2 = float('inf')
+                for i, (px, py) in enumerate(zip(res.x_cells, res.y_cells)):
+                    d2 = (px - rx) ** 2 + (py - ry) ** 2
+                    if d2 < min_d2:
+                        min_d2 = d2
+                        start_idx = i
+            except TransformException:
+                start_idx = 0  # TF unavailable — block from reservation start
+
+            end_idx = min(start_idx + LOOKAHEAD_CELLS, len(res.x_cells))
+            for x, y in zip(res.x_cells[start_idx:end_idx],
+                            res.y_cells[start_idx:end_idx]):
+                r, c = self._world_to_cell_xy(x, y)
+                for dr in range(-SAFETY_CELLS, SAFETY_CELLS + 1):
+                    for dc in range(-SAFETY_CELLS, SAFETY_CELLS + 1):
+                        blocked.add((r + dr, c + dc))
         return blocked
 
     # ------------------------------------------------------------------
-    # WHCA*: space-time A* with window
+    # Spatially-coordinated A* (WHCA* window collapsed to spatial only)
     # ------------------------------------------------------------------
     def _heuristic(self, r, c, goal):
         return abs(r - goal[0]) + abs(c - goal[1])
 
     def _whca(self, start, goal, blocked):
+        """Standard A* with an extra set of spatially-blocked cells."""
         grid = self._get_grid()
         h, w = grid.shape
 
-        # (f, g, row, col, time)
-        open_set = [(self._heuristic(start[0], start[1], goal), 0, start[0], start[1], 0)]
+        open_set = [(self._heuristic(start[0], start[1], goal), 0, start[0], start[1])]
         came_from = {}
-        g_score = {(start[0], start[1], 0): 0}
+        g_score   = {(start[0], start[1]): 0}
 
         moves = [(-1, 0), (1, 0), (0, -1), (0, 1)]
         if self._diagonals:
             moves += [(-1, -1), (-1, 1), (1, -1), (1, 1)]
-        moves.append((0, 0))  # wait action
 
         while open_set:
-            f, g, r, c, t = heapq.heappop(open_set)
+            f, g, r, c = heapq.heappop(open_set)
 
-            # Reached goal
             if (r, c) == goal:
-                return self._reconstruct(came_from, (r, c, t))
-
-            # Reached window limit — return best partial path
-            if t >= self._window:
-                return self._reconstruct(came_from, (r, c, t))
+                return self._reconstruct(came_from, (r, c))
 
             for dr, dc in moves:
-                nr, nc, nt = r + dr, c + dc, t + 1
+                nr, nc = r + dr, c + dc
                 if not (0 <= nr < h and 0 <= nc < w):
                     continue
-                if grid[nr, nc] > 50:        # obstacle
+                if grid[nr, nc] > 50:
                     continue
-                if (nr, nc, nt) in blocked:  # reserved by higher-priority robot
+                if (nr, nc) in blocked:
                     continue
 
                 new_g = g + 1
-                if (nr, nc, nt) not in g_score or new_g < g_score[(nr, nc, nt)]:
-                    g_score[(nr, nc, nt)] = new_g
-                    came_from[(nr, nc, nt)] = (r, c, t)
+                key   = (nr, nc)
+                if key not in g_score or new_g < g_score[key]:
+                    g_score[key] = new_g
+                    came_from[key] = (r, c)
                     heapq.heappush(open_set,
-                        (new_g + self._heuristic(nr, nc, goal), new_g, nr, nc, nt))
+                        (new_g + self._heuristic(nr, nc, goal), new_g, nr, nc))
 
         return []  # no solution found
 
     # ------------------------------------------------------------------
     # Publish own space-time reservations
     # ------------------------------------------------------------------
+    def _republish_trimmed_path(self):
+        """Re-publish the last path with already-traversed waypoints dropped.
+
+        Finds the closest waypoint to the robot's current TF position and
+        republishes only the suffix.  Keeps RViz arrows aligned with where
+        the robot actually is, not where it was at last plan time.
+        """
+        if not self._last_path.poses:
+            self._path_pub.publish(self._last_path)
+            return
+        try:
+            t = self.tf_buffer.lookup_transform(
+                'map', f'{self._robot_name}/base_link', rclpy.time.Time())
+            rx = t.transform.translation.x
+            ry = t.transform.translation.y
+        except TransformException:
+            self._path_pub.publish(self._last_path)
+            return
+
+        best_i, best_d2 = 0, float('inf')
+        for i, ps in enumerate(self._last_path.poses):
+            dx = ps.pose.position.x - rx
+            dy = ps.pose.position.y - ry
+            d2 = dx * dx + dy * dy
+            if d2 < best_d2:
+                best_d2 = d2
+                best_i = i
+
+        msg = Path()
+        msg.header.frame_id = 'map'
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.poses = self._last_path.poses[best_i:]
+        self._path_pub.publish(msg)
+
+    def _heartbeat_reservation(self):
+        """Re-publish the last reservation so it never expires (TTL = 12 s)."""
+        if self._last_reservation_msg is not None:
+            orig = self._last_reservation_msg
+            msg = SpaceTimeReservation()
+            msg.robot_name  = orig.robot_name
+            msg.window_size = orig.window_size
+            msg.x_cells     = orig.x_cells
+            msg.y_cells     = orig.y_cells
+            msg.time_steps  = [0] * len(orig.x_cells)
+            self._res_pub.publish(msg)
+
     def _publish_reservations(self, path_cells):
         msg = SpaceTimeReservation()
         msg.robot_name  = self._robot_name
-        msg.window_size = self._window
-        for (r, c, t) in path_cells:
+        msg.window_size = 0  # unused — spatial blocking only
+        for i, (r, c) in enumerate(path_cells):
             x, y = self._cell_to_world(r, c)
             msg.x_cells.append(x)
             msg.y_cells.append(y)
-            msg.time_steps.append(t)
+            msg.time_steps.append(i)
+        self._last_reservation_msg = msg
         self._res_pub.publish(msg)
 
 

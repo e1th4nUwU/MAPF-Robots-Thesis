@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { font-family: 'Segoe UI', Arial, sans-serif; max-width: 960px; margin: 40px auto; padding: 0 20px; color: #222; line-height: 1.6; }
+  h1 { color: #1a1a2e; border-bottom: 3px solid #4CAF50; padding-bottom: 8px; }
+  h2 { color: #16213e; border-bottom: 1px solid #ccc; padding-bottom: 4px; margin-top: 2em; }
+  h3 { color: #0f3460; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; font-size: 0.88em; }
+  th { background: #1a1a2e; color: white; padding: 8px 12px; text-align: left; }
+  td { padding: 7px 12px; border: 1px solid #ddd; vertical-align: top; }
+  tr:nth-child(even) { background: #f5f5f5; }
+  code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: 'Courier New', monospace; font-size: 0.9em; }
+  pre { background: #1a1a2e; color: #e0e0e0; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 0.85em; line-height: 1.5; }
+  pre code { background: none; color: inherit; padding: 0; }
+  hr { border: none; border-top: 1px solid #ddd; margin: 2em 0; }
+  strong { color: #1a1a2e; }
+</style>
+</head>
+<body>
+<h1>Arquitectura del sistema — Tópicos, GNFC y WHCA*</h1>
+<h2>Mapa de tópicos</h2>
+<h3>Infraestructura compartida (una instancia para todos los robots)</h3>
+<table>
+<thead>
+<tr>
+<th>Tópico</th>
+<th>Tipo</th>
+<th>Quién publica</th>
+<th>Quién suscribe</th>
+<th>Descripción</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/map</code></td>
+<td><code>OccupancyGrid</code></td>
+<td><code>map_server</code></td>
+<td><code>cost_map</code>, RViz</td>
+<td>Mapa estático del escenario</td>
+</tr>
+<tr>
+<td><code>/inflated_map</code></td>
+<td><code>OccupancyGrid</code></td>
+<td><code>cost_map</code></td>
+<td><code>a_star</code>, <code>whca_star</code>, RViz</td>
+<td>Mapa con obstáculos inflados por radio del robot (0.5 m)</td>
+</tr>
+<tr>
+<td><code>/cost_map</code></td>
+<td><code>OccupancyGrid</code></td>
+<td><code>cost_map</code></td>
+<td><code>a_star</code>, <code>whca_star</code>, RViz</td>
+<td>Mapa con gradiente de costo alrededor de obstáculos</td>
+</tr>
+<tr>
+<td><code>/replan_needed</code></td>
+<td><code>Bool</code></td>
+<td><code>cost_map</code></td>
+<td><code>pure_pursuit</code> (todos)</td>
+<td>Se activa cuando un robot muere y el mapa se reconstruye</td>
+</tr>
+<tr>
+<td><code>/space_time_reservations</code></td>
+<td><code>SpaceTimeReservation</code></td>
+<td><code>whca_star</code> (c/robot)</td>
+<td><code>whca_star</code> (c/robot)</td>
+<td>Reservaciones espacio-temporales de cada robot</td>
+</tr>
+<tr>
+<td><code>/robot_priorities</code></td>
+<td><code>String</code></td>
+<td><code>priority_manager</code></td>
+<td><code>whca_star</code> (c/robot)</td>
+<td>Orden de prioridad: <code>"alvin,simon,teodoro"</code></td>
+</tr>
+<tr>
+<td><code>/swarm/goal_areas</code></td>
+<td><code>MarkerArray</code></td>
+<td><code>swarm_viz_bridge</code></td>
+<td>RViz</td>
+<td>Zonas de meta visualizadas como cajas verdes en RViz</td>
+</tr>
+<tr>
+<td><code>/goal_zone_marker</code></td>
+<td><code>Marker</code></td>
+<td><code>goal_zone_visualizer</code></td>
+<td>RViz</td>
+<td>Rectángulo verde de zona de meta (lanzado aparte)</td>
+</tr>
+<tr>
+<td><code>/clock</code></td>
+<td><code>Clock</code></td>
+<td>Gazebo</td>
+<td>Todos los nodos con <code>use_sim_time</code></td>
+<td>Tiempo de simulación</td>
+</tr>
+<tr>
+<td><code>/tf</code>, <code>/tf_static</code></td>
+<td><code>TFMessage</code></td>
+<td>Gazebo, <code>robot_state_publisher</code></td>
+<td><code>pure_pursuit</code>, RViz</td>
+<td>Árbol de transformadas (pose de cada robot)</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h3>Por robot — ejemplo con <code>/alvin/</code> (igual para <code>/teodoro/</code> y <code>/simon/</code>)</h3>
+<table>
+<thead>
+<tr>
+<th>Tópico</th>
+<th>Tipo</th>
+<th>Quién publica</th>
+<th>Quién suscribe</th>
+<th>Descripción</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/alvin/goal_pose</code></td>
+<td><code>PoseStamped</code></td>
+<td>GNFC allocator / usuario</td>
+<td><code>pure_pursuit</code>, <code>whca_coordinator</code>, <code>priority_manager</code></td>
+<td>Meta de navegación del robot</td>
+</tr>
+<tr>
+<td><code>/alvin/cmd_vel</code></td>
+<td><code>Twist</code></td>
+<td><code>pure_pursuit</code></td>
+<td>Gazebo (puente ROS-GZ)</td>
+<td>Comandos de velocidad (v, ω)</td>
+</tr>
+<tr>
+<td><code>/alvin/odom</code></td>
+<td><code>Odometry</code></td>
+<td>Gazebo</td>
+<td><code>swarm_viz_bridge</code>, GNFC</td>
+<td>Odometría local (origen = spawn del robot)</td>
+</tr>
+<tr>
+<td><code>/alvin/odom_map</code></td>
+<td><code>Odometry</code></td>
+<td><code>swarm_viz_bridge</code></td>
+<td>RViz, <code>swarm_health_monitor</code></td>
+<td>Odometría corregida al frame <code>map</code></td>
+</tr>
+<tr>
+<td><code>/alvin/path_planning/path</code></td>
+<td><code>Path</code></td>
+<td><code>whca_star</code> / <code>a_star</code></td>
+<td>RViz</td>
+<td>Trayectoria planificada (para visualización)</td>
+</tr>
+<tr>
+<td><code>/alvin/path_planning/smoothed_path</code></td>
+<td><code>Path</code></td>
+<td><code>path_smoothing</code></td>
+<td>RViz</td>
+<td>Trayectoria suavizada</td>
+</tr>
+<tr>
+<td><code>/alvin/health</code></td>
+<td><code>RobotHealth</code></td>
+<td><code>swarm_health_monitor</code></td>
+<td><code>cost_map</code>, <code>priority_manager</code></td>
+<td>Estado del robot: posición, velocidad, alive/dead</td>
+</tr>
+<tr>
+<td><code>/alvin/kill</code></td>
+<td><code>Bool</code></td>
+<td>GUI (teleop)</td>
+<td><code>pure_pursuit</code>, <code>swarm_health_monitor</code></td>
+<td>Simula muerte del robot</td>
+</tr>
+<tr>
+<td><code>/alvin/navigation/goal_reached</code></td>
+<td><code>Bool</code></td>
+<td><code>pure_pursuit</code></td>
+<td><code>gnfc_goal_allocator</code>, <code>whca_coordinator</code></td>
+<td>Señal de meta alcanzada</td>
+</tr>
+<tr>
+<td><code>/alvin/whca_replan</code></td>
+<td><code>Bool</code></td>
+<td><code>whca_coordinator</code></td>
+<td><code>pure_pursuit</code></td>
+<td>Solicitud de replanning desde el coordinador WHCA*</td>
+</tr>
+<tr>
+<td><code>/alvin/robot_description</code></td>
+<td><code>String</code></td>
+<td><code>robot_state_publisher</code></td>
+<td>RViz</td>
+<td>URDF del robot para visualización</td>
+</tr>
+<tr>
+<td><code>/alvin/joint_states</code></td>
+<td><code>JointState</code></td>
+<td>Gazebo</td>
+<td><code>robot_state_publisher</code></td>
+<td>Estado de las ruedas</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>Cómo funciona GNFC (Greedy Nearest-Free-Cell)</h2>
+<p><strong>Problema que resuelve:</strong> asignar una meta única dentro de una zona rectangular a cada robot,
+sin que dos robots vayan al mismo punto.</p>
+<h3>Algoritmo</h3>
+<pre><code>1. Generar grilla de candidatos dentro de [x_min, x_max] × [y_min, y_max] con spacing dado
+2. Para cada robot que aún no tiene meta:
+   a. Calcular distancia de ese robot a todos los candidatos disponibles
+   b. Asignar el candidato más cercano
+   c. Remover ese candidato del pool (ya no disponible para otros robots)
+3. Publicar PoseStamped a /{robot}/goal_pose para cada asignación
+4. No volver a asignar hasta que el robot publique goal_reached
+</code></pre>
+<h3>Propiedades</h3>
+<ul>
+<li><strong>Complejidad:</strong> O(n·m) — n robots, m candidatos en la grilla</li>
+<li><strong>Greedy:</strong> no garantiza el óptimo global, pero es rápido y suficiente en práctica</li>
+<li><strong>Asignación estable:</strong> una vez asignado, el goal no cambia hasta que el robot llega</li>
+</ul>
+<h3>Flujo de datos</h3>
+<pre><code>GNFC lee /{robot}/odom
+  → calcula distancias a candidatos libres
+  → asigna el más cercano a cada robot que lo necesite
+  → publica /{robot}/goal_pose
+        ↓
+  pure_pursuit recibe goal → planea → sigue ruta
+        ↓
+  pure_pursuit publica /{robot}/navigation/goal_reached
+        ↓
+  GNFC reasigna solo ese robot (los demás conservan su meta)
+</code></pre>
+<hr />
+<h2>Cómo funciona WHCA<em> (Windowed Hierarchical Cooperative A</em>)</h2>
+<p><strong>Problema que resuelve:</strong> planificar rutas para múltiples robots que no se colisionen entre sí,
+incluso cuando sus trayectorias convergen o se cruzan.</p>
+<h3>Componentes</h3>
+<table>
+<thead>
+<tr>
+<th>Nodo</th>
+<th>Función</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>priority_manager</code></td>
+<td>Ordena robots por distancia a su meta (mayor distancia = mayor prioridad)</td>
+</tr>
+<tr>
+<td><code>whca_star</code> (×3)</td>
+<td>Planificador espacio-temporal por robot, sirve el servicio <code>plan_path</code></td>
+</tr>
+<tr>
+<td><code>whca_coordinator</code></td>
+<td>Dispara replanning periódico, escalonado por prioridad</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h3>Espacio de búsqueda: 2D → 3D</h3>
+<p>En A* estándar el estado es <code>(fila, columna)</code>.</p>
+<p>En WHCA<em> el estado es <code>(fila, columna, paso_de_tiempo)</code>. Una celda está "bloqueada"
+no solo si hay un obstáculo estático, sino también si </em><em>un robot de mayor prioridad
+planea ocupar esa celda en ese paso de tiempo</em>*.</p>
+<pre><code>Tiempo →   t=0  t=1  t=2  t=3  t=4
+Alvin        ●    ●    ●    ●    ●    ← reservaciones publicadas
+Simon             ✗    ✗    ✗         ← Simon no puede ir ahí en esos pasos
+</code></pre>
+<hr />
+<h3>Ventana deslizante (Windowed)</h3>
+<p>El planificador calcula la ruta completa hasta la meta, pero solo reserva
+los primeros <strong>W pasos</strong> (<code>window_size = 40 celdas ≈ 2 m</code>). Esto:</p>
+<ul>
+<li>Mantiene el espacio de búsqueda manejable</li>
+<li>Permite actualizar reservaciones con información reciente</li>
+<li>El coordinador dispara <code>/{robot}/whca_replan</code> cada <strong>5 segundos</strong> para deslizar la ventana</li>
+</ul>
+<hr />
+<h3>Flujo de planificación — una ronda de replan</h3>
+<pre><code>whca_coordinator dispara replan (escalonado por prioridad)
+  │
+  ├─→ /alvin/whca_replan    (prioridad 1, delay = 0.0 s)
+  ├─→ /simon/whca_replan    (prioridad 2, delay = 0.8 s)
+  └─→ /teodoro/whca_replan  (prioridad 3, delay = 1.6 s)
+
+─── Alvin (prioridad más alta) ───
+  pure_pursuit recibe whca_replan → pide plan a whca_star
+  whca_star: blocked = {} (nadie tiene mayor prioridad)
+  → planifica ruta completa a meta con A* espacio-temporal
+  → publica reservaciones en /space_time_reservations (primeros 40 pasos)
+  → pure_pursuit sigue la ruta
+
+─── Simon (0.8 s después) ───
+  whca_star: blocked = reservaciones de Alvin (infladas ±5 celdas)
+  → planifica ruta evitando celdas reservadas por Alvin
+  → publica sus propias reservaciones
+
+─── Teodoro (1.6 s después) ───
+  whca_star: blocked = reservaciones de Alvin + Simon
+  → planifica evitando a ambos
+</code></pre>
+<hr />
+<h3>Margen de seguridad — inflación de reservaciones</h3>
+<p>Cada celda reservada <code>(r, c, t)</code> se infla a todos sus vecinos dentro de ±5 celdas
+antes de agregarse al blocked set del robot de menor prioridad:</p>
+<pre><code>Radio físico del robot  ≈ 0.25 m
+Resolución del mapa     = 0.05 m/celda
+SAFETY_CELLS            = ⌈0.25 / 0.05⌉ = 5 celdas
+
+Clearance total entre centros = 2 × 5 × 0.05 = 0.50 m
+</code></pre>
+<p>Esto es consistente con el <code>inflation_radius = 0.5 m</code> usado en el costmap estático
+y satisface el criterio cinemático: <code>d_safe ≥ 2 × r_robot</code> [Silver 2005].</p>
+<hr />
+<h3>Manejo de robots muertos</h3>
+<p>Cuando un robot es marcado como muerto por el health monitor:</p>
+<pre><code>swarm_health_monitor detecta inmovilidad &gt; 3 s
+  → publica /{robot}/health (alive = false)
+        ↓
+  cost_map marca última posición como obstáculo permanente
+  → reconstruye inflated_map y cost_map
+  → publica /replan_needed (todos los pure_pursuit replanean)
+        ↓
+  El robot muerto deja de publicar /space_time_reservations
+        ↓
+  En whca_star: reservaciones tienen TTL = 12 s
+  → después de 12 s, sus entradas expiran automáticamente
+  → supervivientes pueden planear libremente por esas celdas
+  (el obstáculo estático en el mapa ya garantiza evasión física)
+</code></pre>
+<hr />
+<h3>Diagrama completo de tópicos WHCA*</h3>
+<pre><code>                    /robot_priorities
+priority_manager ──────────────────────────────────→ whca_star[*]
+                                                          ↑↓
+gnfc_allocator ──→ /{robot}/goal_pose           /space_time_reservations
+                         ↓
+whca_coordinator ──→ /{robot}/whca_replan
+                         ↓
+                   pure_pursuit[robot]
+                    │
+                    ├─ SM_WAIT_FOR_NEW_GOAL  ←── /{robot}/goal_pose
+                    ├─ SM_PLAN_PATH          ──→ plan_path service ──→ whca_star
+                    ├─ SM_SMOOTH_PATH        ──→ smooth_path service
+                    ├─ SM_FOLLOWING_PATH     ──→ /{robot}/cmd_vel
+                    └─ SM_SAVE_DATA          ──→ /{robot}/navigation/goal_reached
+                                                         ↓
+                                              gnfc_allocator reasigna
+                                              whca_coordinator deja de replanear
+</code></pre>
+</body>
+</html>

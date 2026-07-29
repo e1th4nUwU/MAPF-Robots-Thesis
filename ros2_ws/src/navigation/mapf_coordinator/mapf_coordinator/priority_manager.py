@@ -42,9 +42,18 @@ class PriorityManagerNode(Node):
             dy = goal.pose.position.y - pos.y
             distances[robot] = (dx**2 + dy**2) ** 0.5
 
-        # Bigger distance -> Better priority
-        # This allows large distances to not be longer
-        ordered = sorted(ROBOT_NAMES, key=lambda r: -distances[r])
+        # Closer to goal -> higher priority.
+        # Rationale: the robot nearest its goal finishes soonest and parks
+        # (stops blocking corridors).  Letting it through first frees the
+        # space faster than letting a farther robot pass.  Also avoids the
+        # pathological "lead robot has low priority and won't move out of
+        # the way of the trailing robot" deadlock observed in rocks.
+        # Unassigned robots (distance == 0) are sent to the back so they
+        # never block live navigators.
+        def _key(r):
+            d = distances[r]
+            return (d == 0.0, d)  # parked/unassigned last, then ascending dist
+        ordered = sorted(ROBOT_NAMES, key=_key)
         self._pub.publish(String(data=','.join(ordered)))
 
 def main(args=None):

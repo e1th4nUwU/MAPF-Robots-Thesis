@@ -9,6 +9,7 @@
 #
 
 import rclpy
+import time
 from rclpy.node import Node
 from rclpy.duration import Duration
 from nav_msgs.msg import OccupancyGrid
@@ -21,9 +22,16 @@ FULL_NAME = "Jorge Eithan Treviño Selles"
 
 ROBOT_NAMES = ['alvin', 'teodoro', 'simon']
 
-# Radius (metres) used to paint a dead robot as an obstacle on the map.
-# Conservative coverage of ~0.5m robot body.
-DEAD_ROBOT_RADIUS_M = 0.2
+# Physical body radius painted as obstacle when a robot dies.
+# justina circumscribed radius = sqrt(0.225²+0.195²) ≈ 0.30 m.
+DEAD_ROBOT_RADIUS_M = 0.30
+
+# Extra clearance added around the dead-robot body in the inflated map.
+# Intentionally smaller than the general inflation_radius (0.5 m) so that
+# a dead robot doesn't cut off entire corridors for live robots.
+# 0.10 m gives 0.40 m total obstacle radius; Gazebo physics prevents actual
+# overlap if a live robot approaches closer than its own body allows.
+DEAD_ROBOT_CLEARANCE_M = 0.10
 
 class CostMapNode(Node):
     def get_inflated_map(self, static_map, inflation_cells):
@@ -139,9 +147,10 @@ class CostMapNode(Node):
         inflation_radius = self.get_parameter('inflation_radius').get_parameter_value().double_value
         cost_radius      = self.get_parameter('cost_radius').get_parameter_value().double_value
 
-        self._inflation_cells = round(inflation_radius / res)
-        self._cost_cells      = round(cost_radius      / res)
-        self._dead_cells      = round(DEAD_ROBOT_RADIUS_M / res)
+        self._inflation_cells    = round(inflation_radius    / res)
+        self._cost_cells         = round(cost_radius         / res)
+        self._dead_cells         = round(DEAD_ROBOT_RADIUS_M    / res)
+        self._dead_clear_cells   = round(DEAD_ROBOT_CLEARANCE_M / res)
 
         self.get_logger().info(
             f'Precomputing static maps '
@@ -163,9 +172,10 @@ class CostMapNode(Node):
         cost     = numpy.copy(self._static_cost)
 
         # Paint each dead robot as an obstacle + cost gradient.
-        # Total inflation radius = physical footprint + configured inflation.
-        total_inf  = self._dead_cells + self._inflation_cells
-        total_cost = self._dead_cells + self._cost_cells
+        # Dead-robot obstacle: body + clearance only (not full inflation_radius),
+        # so a dead robot doesn't cut off entire corridors for live robots.
+        total_inf  = self._dead_cells + self._dead_clear_cells
+        total_cost = self._dead_cells + self._dead_clear_cells
 
         for name, pos in self.dead_robots.items():
             if pos is None:
@@ -197,7 +207,7 @@ class CostMapNode(Node):
                             cost[r, c] = 100
                         elif dist <= total_cost:
                             dist_from_edge = dist - self._dead_cells
-                            cost_val = self._cost_cells - dist_from_edge + 1
+                            cost_val = self._dead_clear_cells - dist_from_edge + 1
                             cost[r, c] = max(int(cost_val), int(cost[r, c]))
 
         inflated_data = numpy.ravel(inflated)
@@ -224,11 +234,17 @@ class CostMapNode(Node):
         self.get_logger().info("Static map service is now available...")
         self.get_logger().info("Trying to get first static map...")
         self.map_static = None
-        max_retries = 5
+        # Retry generously: with the scenario launch we now bring up Gazebo,
+        # GNFC, the visualiser, and per-robot navigation in parallel, so the
+        # map_server may take several seconds to fully publish.  Use
+        # `time.sleep` (system clock) because `get_clock().sleep_for` follows
+        # /clock when use_sim_time is on — and /clock itself may not be
+        # publishing yet at this point, which would stall the retry forever.
+        max_retries = 30
         for attempt in range(max_retries):
             try:
                 future = self.clt_static_map.call_async(GetMap.Request())
-                rclpy.spin_until_future_complete(self, future)
+                rclpy.spin_until_future_complete(self, future, timeout_sec=2.0)
                 response = future.result()
                 if response and response.map and response.map.info.resolution > 0:
                     self.map_static = response.map
@@ -238,7 +254,13 @@ class CostMapNode(Node):
                 self.get_logger().warn(f"Attempt {attempt+1} failed: {e}")
             if self.map_static is None:
                 self.get_logger().info(f"Retrying map service (attempt {attempt+1}/{max_retries})...")
-                self.get_clock().sleep_for(Duration(seconds=1.0))
+                time.sleep(1.0)
+        if self.map_static is None:
+            raise RuntimeError(
+                f"Failed to retrieve a non-empty static map from /map_server/map "
+                f"after {max_retries} attempts.  Is map_server running and was "
+                f"the YAML file loaded correctly?"
+            )
         self.declare_parameter('inflation_radius', 0.05)
         self.declare_parameter('cost_radius', 0.05)
 

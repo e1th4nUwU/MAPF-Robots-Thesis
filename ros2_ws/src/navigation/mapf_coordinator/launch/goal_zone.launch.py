@@ -27,7 +27,7 @@ def generate_launch_description():
         DeclareLaunchArgument('x_max', default_value='9.0', description='Zone max X (m)'),
         DeclareLaunchArgument('y_min', default_value='-1.0', description='Zone min Y (m)'),
         DeclareLaunchArgument('y_max', default_value='1.0', description='Zone max Y (m)'),
-        DeclareLaunchArgument('spacing', default_value='0.3', description='Goal grid spacing (m)'),
+        DeclareLaunchArgument('spacing', default_value='0.8', description='Goal grid spacing (m)'),
 
         # GNFC Goal Allocator
         Node(
