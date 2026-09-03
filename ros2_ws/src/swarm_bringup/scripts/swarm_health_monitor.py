@@ -6,7 +6,13 @@ Monitors each robot's odometry and publishes a RobotHealth message
 when a robot stops moving (i.e. has likely died/crashed).
 
 A robot is considered DEAD when its position hasn't changed by more
-than MOVEMENT_THRESHOLD metres for DEATH_TIMEOUT seconds.
+than MOVEMENT_THRESHOLD metres for DEATH_TIMEOUT seconds, EXCEPT while it
+reports that it is stopped deliberately: parked on its goal, yielding right of
+way, or holding until the coordinator finds it a coordinated route.  Those are
+the coordination working as designed, and at a narrow bottleneck a robot can
+legitimately wait far longer than DEATH_TIMEOUT.  Without that distinction the
+monitor kills the robots that behave correctly, and the fault-tolerance runs end
+up measuring something other than what they claim to.
 
 Published topics:
   /{robot}/health  →  navig_msgs/RobotHealth
@@ -52,6 +58,14 @@ class RobotState:
                                       # (prevents false-positive death at spawn)
         self.is_killed = False        # True after GUI kill — blocks odom from resetting timer
         self.at_goal = False          # True after goal_reached — suppresses death check
+        self.is_waiting = False       # True while the controller reports it is
+                                      # stopped ON PURPOSE (yielding right of
+                                      # way, or holding for a coordinated plan).
+                                      # Also suppresses the death check: a robot
+                                      # that yields is the coordination working,
+                                      # not a fault, and at a narrow bottleneck
+                                      # it can legitimately wait far longer than
+                                      # DEATH_TIMEOUT.
 
 
 class SwarmHealthMonitor(Node):
@@ -102,6 +116,14 @@ class SwarmHealthMonitor(Node):
                 Twist,
                 f'/{name}/cmd_vel',
                 lambda msg, n=name: self._cmd_vel_callback(msg, n),
+                10,
+            )
+            # The controller says when it is stopped on purpose — yielding right
+            # of way, or holding until the coordinator finds it a route.
+            self.create_subscription(
+                Bool,
+                f'/{name}/navigation/waiting',
+                lambda msg, n=name: self._waiting_callback(msg, n),
                 10,
             )
             self.get_logger().info(f'Subscribed to /{name}/odom')
@@ -173,6 +195,18 @@ class SwarmHealthMonitor(Node):
             if not state.is_killed:
                 state.last_moved_time = self.get_clock().now()
 
+    def _waiting_callback(self, msg: Bool, robot_name: str):
+        """Controller reports whether it is stopped deliberately."""
+        state = self.states[robot_name]
+        if state.is_killed:
+            return
+        was_waiting = state.is_waiting
+        state.is_waiting = bool(msg.data)
+        if was_waiting and not state.is_waiting:
+            # Started moving again — restart the clock so the time spent
+            # yielding is not counted towards the death timeout.
+            state.last_moved_time = self.get_clock().now()
+
     def _goal_reached_callback(self, msg: Bool, robot_name: str):
         """Robot reached its goal — suppress death check while stationary at goal."""
         if msg.data:
@@ -198,7 +232,13 @@ class SwarmHealthMonitor(Node):
             # - haven't received odom yet
             # - never moved since spawn (waiting for first goal)
             # - at goal (stationary by design, not dead)
-            if not state.got_first_odom or not state.has_ever_moved or state.at_goal:
+            # - yielding or holding for a plan (stationary by design too)
+            if (not state.got_first_odom or not state.has_ever_moved
+                    or state.at_goal or state.is_waiting):
+                if state.is_waiting:
+                    # Keep the clock fresh so a long yield does not leave the
+                    # robot one tick away from death the moment it resumes.
+                    state.last_moved_time = now
                 self._publish_health(name, state, now)
                 continue
             was_alive = state.is_alive

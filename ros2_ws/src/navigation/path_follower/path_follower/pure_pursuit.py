@@ -105,9 +105,11 @@ class PurePursuitNode(Node):
             # YIELD_DISTANCE_M, stop and let it pass.  This handles cases
             # where WHCA*'s spatial plans converge briefly at chokepoints.
             if self._should_yield(robot_p, robot_a):
+                self._set_waiting(True)
                 self.publish_and_save_data(robot_x, robot_y, robot_a,
                                            robot_x, robot_y, 0.0, 0.0)
                 continue
+            self._set_waiting(False)
 
             # ── Advance anchor to the closest path point to the robot ───────
             # This prevents the lookahead from ever going backwards.
@@ -131,6 +133,16 @@ class PurePursuitNode(Node):
             v, w = self.calculate_control(robot_x, robot_y, robot_a,
                                           goal_x, goal_y, alpha, beta, v_max, w_max)
             self.publish_and_save_data(robot_x, robot_y, robot_a, goal_x, goal_y, v, w)
+
+    def _set_waiting(self, waiting: bool):
+        """Publish the deliberate-stop flag, only when it changes."""
+        if waiting == self._waiting:
+            return
+        self._waiting = waiting
+        self.pub_waiting.publish(Bool(data=waiting))
+        self.get_logger().info(
+            'Waiting on purpose — death check suppressed' if waiting
+            else 'Moving again — death check re-enabled')
 
     def publish_and_save_data(self, robot_x, robot_y, robot_a, goal_x, goal_y, v,w):
         self.nav_data.append([robot_x, robot_y, robot_a, goal_x, goal_y, v, w])
@@ -287,6 +299,13 @@ class PurePursuitNode(Node):
                 PoseStamped, f'/{_r}/goal_pose',
                 lambda msg, r=_r: self._finished.discard(r), _latched)
         self.pub_cmd_vel = self.create_publisher(Twist, 'cmd_vel', 1)
+        # Declares "I am stopped on purpose".  swarm_health_monitor cannot tell
+        # a robot that is yielding from one that has failed — both sit still
+        # with zero cmd_vel — so it used to declare a legitimately waiting robot
+        # dead after DEATH_TIMEOUT.  Yielding is the coordination working, not a
+        # fault, so the controller states it explicitly.
+        self.pub_waiting = self.create_publisher(Bool, 'navigation/waiting', 1)
+        self._waiting = None
         self.pub_goal_reached = self.create_publisher(Bool, 'navigation/goal_reached', 1)
         self.sub_goal_pose = self.create_subscription(PoseStamped, 'goal_pose', self.callback_goal_pose, _latched)
 
@@ -391,7 +410,10 @@ class PurePursuitNode(Node):
                 self.get_logger().info("Following path with [v_max, w_max, alpha, beta, tol]="+str([v_max, w_max, alpha, beta, tol]))
                 path_points = [numpy.asarray([p.pose.position.x, p.pose.position.y]) for p in path.poses]
                 if not path_points:
+                    # No coordinated route right now: the robot yields and the
+                    # coordinator retries. Deliberate, not a failure.
                     self.get_logger().warn("Empty path — no solution found, waiting for new goal")
+                    self._set_waiting(True)
                     state = SM_WAIT_FOR_NEW_GOAL
                     continue
                 self.pure_pursuit(path_points, alpha, beta, v_max, w_max, tol)
@@ -422,6 +444,7 @@ class PurePursuitNode(Node):
                     state = SM_SAVE_DATA
 
             elif state == SM_SAVE_DATA:
+                self._set_waiting(False)
                 s = ""
                 for d in self.nav_data:
                     s += str(d[0]) +","+ str(d[1]) +","+ str(d[2]) +","+ str(d[3]) +","+ str(d[4]) +","+ str(d[5]) +","+ str(d[6]) + "\n"
