@@ -51,6 +51,14 @@ FRONT_CONE_RAD = 1.57
 # (2 × 0.30 m radius) + 0.05 m margin.
 EMERGENCY_STOP_M = 0.65
 
+# How long a robot left without a coordinated route waits before trying again,
+# instead of sitting until the coordinator's next tick.  The lowest-priority
+# robot only gets a tick every replan_period_sec + stagger_sec * (k-1) ~= 5 s,
+# so a corridor that clears right after a failure costs it the whole interval.
+# Planning the maze costs ~220 ms measured, and a robot with no route publishes
+# an empty reservation, so retrying early disturbs nobody and is nearly free.
+EMPTY_PATH_RETRY_SEC = 1.0
+
 SM_INIT = 0
 SM_WAIT_FOR_NEW_GOAL = 10
 SM_PLAN_PATH = 20
@@ -267,6 +275,8 @@ class PurePursuitNode(Node):
         # 0.8 m and YIELD_DISTANCE_M at 1.20 m, every robot whose goal sits
         # next to a parked one would wait forever, 0.8 m short of arriving.
         self._finished = set()
+        # time.monotonic() of the last empty plan, or None when we have a route.
+        self._empty_path_since = None
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.declare_parameter('v_max', 0.5)
@@ -370,6 +380,15 @@ class PurePursuitNode(Node):
                         # arrives, which unpaints us.
                         continue
                     state = SM_PLAN_PATH
+                elif (self._empty_path_since is not None
+                      and self._robot_name not in self._finished
+                      and numpy.linalg.norm(self.goal_pose) > 0.01
+                      and time.monotonic() - self._empty_path_since
+                          >= EMPTY_PATH_RETRY_SEC):
+                    # Left without a route last time.  Retry on our own instead
+                    # of waiting for the coordinator's next staggered tick.
+                    self._empty_path_since = time.monotonic()
+                    state = SM_PLAN_PATH
 
             elif state == SM_PLAN_PATH:
                 # Kill signal may arrive during the replan sleep — bail out if so.
@@ -416,11 +435,14 @@ class PurePursuitNode(Node):
                 tol   = self.get_parameter('tol').get_parameter_value().double_value
                 self.get_logger().info("Following path with [v_max, w_max, alpha, beta, tol]="+str([v_max, w_max, alpha, beta, tol]))
                 path_points = [numpy.asarray([p.pose.position.x, p.pose.position.y]) for p in path.poses]
+                if path_points:
+                    self._empty_path_since = None
                 if not path_points:
                     # No coordinated route right now: the robot yields and the
                     # coordinator retries. Deliberate, not a failure.
                     self.get_logger().warn("Empty path — no solution found, waiting for new goal")
                     self._set_waiting(True)
+                    self._empty_path_since = time.monotonic()
                     state = SM_WAIT_FOR_NEW_GOAL
                     continue
                 self.pure_pursuit(path_points, alpha, beta, v_max, w_max, tol)
