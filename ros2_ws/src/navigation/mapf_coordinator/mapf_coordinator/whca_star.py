@@ -1,4 +1,4 @@
-import rclpy, heapq, numpy as np
+import rclpy, heapq, math, numpy as np
 from rclpy.node import Node
 from nav_msgs.msg import OccupancyGrid, Path
 from nav_msgs.srv import GetPlan, GetMap
@@ -43,7 +43,9 @@ class WhcaStarNode(Node):
         # Reservations table: {robot_name: (SpaceTimeReservation, timestamp)}
         self._reservations = {}
 
-        # Priority list (farther from goal = higher priority)
+        # Priority list, highest priority first.  priority_manager orders it
+        # by ASCENDING distance to goal (closest to its goal wins) — see
+        # priority_manager._publish_priorities for the rationale.
         self._priorities = ROBOT_NAMES[:]
 
         # Get maps via service (same pattern as a_star.py)
@@ -169,6 +171,23 @@ class WhcaStarNode(Node):
         return path
 
     # ------------------------------------------------------------------
+    # Occupancy predicate
+    #
+    # Must match a_star.py (the `independent` baseline) cell for cell, or the
+    # two planners search different free spaces and the Ch. 6 comparison stops
+    # being attributable to coordination alone.  a_star rejects a neighbour
+    # when `grid > 40 or grid < 0`: the 40 threshold, and -1 (unknown) treated
+    # as NOT traversable.  The inflated map keeps -1 for unknown cells
+    # (get_inflated_map only writes 100), so the previous `> 50` test let this
+    # planner drive through unknown space that the baseline refused.
+    # ------------------------------------------------------------------
+    OCCUPANCY_THRESHOLD = 40
+
+    def _is_free(self, grid, r, c):
+        v = grid[r, c]
+        return 0 <= v <= self.OCCUPANCY_THRESHOLD
+
+    # ------------------------------------------------------------------
     # Planning service callback
     # ------------------------------------------------------------------
     def _nearest_free(self, start, grid):
@@ -179,13 +198,13 @@ class WhcaStarNode(Node):
         """
         from collections import deque
         h, w = grid.shape
-        if grid[start[0], start[1]] <= 50:
+        if self._is_free(grid, start[0], start[1]):
             return start
         q = deque([start])
         visited = {start}
         while q:
             r, c = q.popleft()
-            if grid[r, c] <= 50:
+            if self._is_free(grid, r, c):
                 return (r, c)
             for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1),
                             (-1, -1), (-1, 1), (1, -1), (1, 1)]:
@@ -203,7 +222,7 @@ class WhcaStarNode(Node):
         # Escape start if it landed inside an obstacle (e.g. dead-robot inflation
         # covers the robot's current grid cell → all A* neighbours also blocked).
         grid = self._get_grid()
-        if grid[start_cell[0], start_cell[1]] > 50:
+        if not self._is_free(grid, start_cell[0], start_cell[1]):
             escaped = self._nearest_free(start_cell, grid)
             if escaped != start_cell:
                 self.get_logger().warn(
@@ -295,20 +314,32 @@ class WhcaStarNode(Node):
     # Spatially-coordinated A* (WHCA* window collapsed to spatial only)
     # ------------------------------------------------------------------
     def _heuristic(self, r, c, goal):
-        return abs(r - goal[0]) + abs(c - goal[1])
+        """Euclidean distance to the goal, in cells.
+
+        Must stay consistent with the step costs below: with 8-connectivity a
+        Manhattan heuristic overestimates the remaining cost (a diagonal step
+        advances 1 in both axes but costs sqrt(2), not 2), which makes it
+        inadmissible and costs A* its optimality guarantee.  a_star.py uses the
+        euclidean distance for the same reason.
+        """
+        return math.hypot(r - goal[0], c - goal[1])
 
     def _whca(self, start, goal, blocked):
         """Standard A* with an extra set of spatially-blocked cells."""
         grid = self._get_grid()
         h, w = grid.shape
 
-        open_set = [(self._heuristic(start[0], start[1], goal), 0, start[0], start[1])]
+        open_set = [(self._heuristic(start[0], start[1], goal), 0.0, start[0], start[1])]
         came_from = {}
-        g_score   = {(start[0], start[1]): 0}
+        g_score   = {(start[0], start[1]): 0.0}
 
-        moves = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+        # (dr, dc, step_cost) — a diagonal step covers sqrt(2) cells, so
+        # charging it 1 like an orthogonal step made diagonals free and biased
+        # the search towards physically longer paths.
+        moves = [(-1, 0, 1.0), (1, 0, 1.0), (0, -1, 1.0), (0, 1, 1.0)]
         if self._diagonals:
-            moves += [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+            moves += [(-1, -1, math.sqrt(2)), (-1, 1, math.sqrt(2)),
+                      (1, -1, math.sqrt(2)), (1, 1, math.sqrt(2))]
 
         while open_set:
             f, g, r, c = heapq.heappop(open_set)
@@ -316,16 +347,16 @@ class WhcaStarNode(Node):
             if (r, c) == goal:
                 return self._reconstruct(came_from, (r, c))
 
-            for dr, dc in moves:
+            for dr, dc, step_cost in moves:
                 nr, nc = r + dr, c + dc
                 if not (0 <= nr < h and 0 <= nc < w):
                     continue
-                if grid[nr, nc] > 50:
+                if not self._is_free(grid, nr, nc):
                     continue
                 if (nr, nc) in blocked:
                     continue
 
-                new_g = g + 1
+                new_g = g + step_cost
                 key   = (nr, nc)
                 if key not in g_score or new_g < g_score[key]:
                     g_score[key] = new_g

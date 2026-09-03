@@ -13,24 +13,45 @@ from geometry_msgs.msg import Pose, PoseStamped, Point
 from navig_msgs.srv import ProcessPath
 import numpy
 
-NAME = "FULL NAME"
+NAME = "Jorge Eithan Treviño Selles"
 
 class PathSmoothingNode(Node):
     def smooth_path(self, Q, w1, w2, max_steps):
-        #
-        # TODO:
-        # Write the code to smooth the path Q, using the gradient descend algorithm,
-        # and return a new smoothed path P.
-        # Path is composed of a set of points [x,y] as follows:
-        # [[x0,y0], [x1,y1], ..., [xn,ym]].
-        # The smoothed path must have the same shape.
-        # Return the smoothed path.
-        #
-        P = numpy.copy(Q)
-        tol     = 0.00001                   
+        """Smooth the path Q by gradient descent and return a new path P.
+
+        Q is a set of points [[x0,y0], [x1,y1], ..., [xn,yn]]; P has the same
+        shape.  The cost minimised is
+
+            J(P) = w1 * sum_i ||p_i - q_i||^2        (fidelity to the A* path)
+                 + w2 * sum_i ||p_i - p_{i+1}||^2    (smoothness)
+
+        whose gradient at an interior point combines both pulls:
+
+            dJ/dp_i = w1 (p_i - q_i) + w2 (2 p_i - p_{i-1} - p_{i+1})
+
+        The first term pulls p_i back towards its original position, the second
+        pulls it towards the average of its neighbours.  Endpoints stay pinned
+        to q_0 and q_n so the path still starts at the robot and ends at the
+        planned goal.
+        """
+        P = numpy.copy(Q).astype(float)
+        tol     = 0.00001
         nabla   = numpy.full(Q.shape, float("inf"))
-        epsilon = 0.1                       
-        
+        epsilon = 0.1
+
+        # Fewer than three points leaves no interior point to move.
+        if len(P) < 3:
+            return P
+
+        steps = 0
+        while numpy.linalg.norm(nabla) > tol and steps < max_steps:
+            nabla = numpy.zeros(P.shape)
+            nabla[1:-1] = (w1 * (P[1:-1] - Q[1:-1])
+                           + w2 * (2.0 * P[1:-1] - P[:-2] - P[2:]))
+            P -= epsilon * nabla
+            steps += 1
+
+        self._last_steps = steps
         return P
 
     def callback_smooth_path(self, request, response):
@@ -40,10 +61,12 @@ class PathSmoothingNode(Node):
         self.get_logger().info("Smoothing path with params: " + str([w1, w2, steps]))
         start_time = self.get_clock().now()
         Q = numpy.asarray([[p.pose.position.x, p.pose.position.y] for p in request.path.poses])
+        self._last_steps = 0
         P = self.smooth_path(Q, w1, w2, steps)
         end_time = self.get_clock().now()
         delta_ms = (end_time.nanoseconds - start_time.nanoseconds)/1e6
-        self.get_logger().info("Path smoothed after " + str(delta_ms) + " ms")
+        self.get_logger().info("Path smoothed in " + str(self._last_steps) +
+                               " iterations after " + str(delta_ms) + " ms")
         self.msg_smooth_path.header.frame_id = request.path.header.frame_id
         self.msg_smooth_path.header.stamp = self.get_clock().now().to_msg()
         self.msg_smooth_path.poses = []
