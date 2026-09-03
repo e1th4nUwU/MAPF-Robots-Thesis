@@ -251,6 +251,8 @@ class WhcaStarNode(Node):
             f'Planning from {start_cell} to {goal_cell}, '
             f'blocked={len(blocked)} spatial cells')
         path_cells = self._whca(start_cell, goal_cell, blocked)
+        if not path_cells:
+            self._explain_failure(grid, start_cell, goal_cell, blocked)
         if not path_cells and blocked:
             # Coordinated path infeasible (narrow corridor busy with higher-priority
             # robots).  Return empty so pure_pursuit stops and waits in
@@ -264,6 +266,68 @@ class WhcaStarNode(Node):
         self._last_path = self._cells_to_path(path_cells)
         response.plan   = self._last_path
         return response
+
+
+    # ------------------------------------------------------------------
+    # Failure diagnosis
+    # ------------------------------------------------------------------
+    def _explain_failure(self, grid, start, goal, blocked):
+        """Say WHY a plan came back empty.
+
+        An empty path is legitimate — it means "yield and retry" — but until
+        now the log could not distinguish the three reasons it happens, which
+        need completely different responses:
+          * the goal is under a static obstacle      -> the scenario is wrong
+          * the goal is under another robot's        -> coordination working,
+            reservation halo                            just conservative
+          * the goal is free but walled in           -> the corridor to it is
+                                                        fully reserved
+        """
+        h, w = grid.shape
+
+        def classify(r, c):
+            if not (0 <= r < h and 0 <= c < w):
+                return 'fuera'
+            if not self._is_free(grid, r, c):
+                return 'mapa'
+            if (r, c) in blocked:
+                return 'reservado'
+            return 'libre'
+
+        gstate = classify(*goal)
+        sstate = classify(*start)
+
+        # Free ring around the goal: how much room is actually left there.
+        ring = {'libre': 0, 'reservado': 0, 'mapa': 0, 'fuera': 0}
+        R = 14  # 0.70 m, the parked-robot paint radius
+        for dr in range(-R, R + 1):
+            for dc in range(-R, R + 1):
+                if dr * dr + dc * dc <= R * R:
+                    ring[classify(goal[0] + dr, goal[1] + dc)] += 1
+        total = sum(ring.values())
+
+        self.get_logger().warn(
+            f'SIN RUTA  inicio {start} [{sstate}]  meta {goal} [{gstate}]  '
+            f'| bloqueadas por reservación: {len(blocked)} celdas '
+            f'| alrededor de la meta (r=0.70 m): '
+            f'{100 * ring["libre"] / total:.0f}% libre, '
+            f'{100 * ring["reservado"] / total:.0f}% reservado, '
+            f'{100 * ring["mapa"] / total:.0f}% obstáculo'
+        )
+        if gstate == 'mapa':
+            self.get_logger().warn(
+                '  -> la meta está DENTRO de un obstáculo del mapa: o es un '
+                'robot estacionado pintado encima, o la zona de meta está mal '
+                'colocada respecto a la inflación.')
+        elif gstate == 'reservado':
+            self.get_logger().warn(
+                '  -> la meta está dentro del halo reservado por un robot de '
+                'mayor prioridad; se libera cuando ese robot avance.')
+        elif ring['libre'] * 4 < total:
+            self.get_logger().warn(
+                '  -> la meta está libre pero rodeada: el corredor hacia ella '
+                'está tomado. Es la incompletitud de la planificación '
+                'priorizada, no un error de código.')
 
     # ------------------------------------------------------------------
     # Blocked-cell set from higher-priority robots (LOOKAHEAD SPATIAL)
