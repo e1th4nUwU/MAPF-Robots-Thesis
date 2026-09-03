@@ -325,9 +325,14 @@ class WhcaStarNode(Node):
                 'mayor prioridad; se libera cuando ese robot avance.')
         elif ring['libre'] * 4 < total:
             self.get_logger().warn(
-                '  -> la meta está libre pero rodeada: el corredor hacia ella '
-                'está tomado. Es la incompletitud de la planificación '
-                'priorizada, no un error de código.')
+                '  -> la meta está libre pero rodeada: el anillo a su '
+                'alrededor está mayormente tomado.')
+        else:
+            self.get_logger().warn(
+                '  -> la meta y su entorno están libres: lo tomado es el '
+                'CORREDOR hacia ella. Es la incompletitud de la planificación '
+                'priorizada, no un error de código: se resuelve cuando el '
+                'robot de mayor prioridad avance.')
 
     # ------------------------------------------------------------------
     # Blocked-cell set from higher-priority robots (LOOKAHEAD SPATIAL)

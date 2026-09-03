@@ -362,6 +362,13 @@ class PurePursuitNode(Node):
                 elif self.needs_replan and numpy.linalg.norm(self.goal_pose) > 0.01:
                     # Coordinator triggered a replan while stuck here (e.g. after empty path).
                     self.needs_replan = False
+                    if self._robot_name in self._finished:
+                        # Already parked on this goal.  cost_map paints a
+                        # PARKED_ROBOT_RADIUS_M disc at our own position, so the
+                        # goal now sits inside our own obstacle and every replan
+                        # would come back empty.  Nothing to do until a new goal
+                        # arrives, which unpaints us.
+                        continue
                     state = SM_PLAN_PATH
 
             elif state == SM_PLAN_PATH:

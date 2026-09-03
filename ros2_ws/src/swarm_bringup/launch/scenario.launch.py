@@ -98,9 +98,16 @@ SCENARIO_ROBOTS = {
 # green goal marker shown in Gazebo/RViz.  Picked so robots get the same
 # deterministic goals every run — crucial for reproducible WHCA* tests.
 SCENARIO_GOAL_ZONES = {
-    'towers': {'x_min': 7.5, 'x_max': 9.0, 'y_min': -1.5, 'y_max': 1.5, 'spacing': 0.8},
-    'rocks':  {'x_min': 8.0, 'x_max': 9.0, 'y_min': -1.5, 'y_max': 1.5, 'spacing': 0.8},
-    'maze':   {'x_min': 7.5, 'x_max': 9.0, 'y_min': -1.0, 'y_max': 0.6, 'spacing': 0.8},
+    # spacing must clear PARKED_ROBOT_RADIUS_M (0.70 m, cost_map.py) plus the
+    # parking tolerance: pure_pursuit declares the goal reached within tol*2 =
+    # 0.20 m, so a robot parks up to that far off and its painted disc shifts
+    # with it.  At the old 0.80 m spacing only 0.10 m of margin was left, and a
+    # robot that stopped short covered its neighbour's goal — the planner then
+    # reported the goal 90-97% inside a map obstacle and returned no route.
+    # 1.00 m leaves 0.10 m of margin beyond the worst-case parking error.
+    'towers': {'x_min': 7.5, 'x_max': 9.0, 'y_min': -1.5, 'y_max': 1.5, 'spacing': 1.0},
+    'rocks':  {'x_min': 8.0, 'x_max': 9.0, 'y_min': -1.5, 'y_max': 1.5, 'spacing': 1.0},
+    'maze':   {'x_min': 7.5, 'x_max': 9.0, 'y_min': -1.0, 'y_max': 0.6, 'spacing': 1.0},
 }
 
 # ── SDF primitive helpers ──────────────────────────────────────────────────────

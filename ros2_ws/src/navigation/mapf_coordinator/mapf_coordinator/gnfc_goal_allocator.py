@@ -42,7 +42,9 @@ DEFAULT_GOAL_ZONE = {
 # Grid spacing (metres) — must be >= robot circumscribed diameter (2 × 0.30 m = 0.60 m)
 # so adjacent goals never require robots to physically overlap.
 # 0.8 m gives 0.20 m of clearance between robot bodies at adjacent goals.
-DEFAULT_GOAL_GRID_SPACING = 0.8
+# Must clear PARKED_ROBOT_RADIUS_M (0.70 m) plus the 0.20 m parking tolerance,
+# or a robot that stops short paints over its neighbour's goal.
+DEFAULT_GOAL_GRID_SPACING = 1.0
 
 
 class GNFCGoalAllocatorNode(Node):
