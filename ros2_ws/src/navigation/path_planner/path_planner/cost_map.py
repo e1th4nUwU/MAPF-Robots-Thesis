@@ -17,6 +17,7 @@ from nav_msgs.srv import GetMap
 from std_msgs.msg import Bool
 from geometry_msgs.msg import PoseStamped
 from navig_msgs.msg import RobotHealth
+import math
 import numpy
 
 FULL_NAME = "Jorge Eithan Treviño Selles"
@@ -33,6 +34,16 @@ DEAD_ROBOT_RADIUS_M = 0.30
 # 0.10 m gives 0.40 m total obstacle radius; Gazebo physics prevents actual
 # overlap if a live robot approaches closer than its own body allows.
 DEAD_ROBOT_CLEARANCE_M = 0.10
+
+# Radius painted around a robot parked on its goal.  It must be at least
+# EMERGENCY_STOP_M (0.65 m, in pure_pursuit), because the planner treats the
+# robot as a point: a route grazing a 0.40 m painted square passes 0.45 m from
+# the parked robot's centre, which is body contact (2 x 0.30 m) AND inside the
+# emergency-stop radius.  The approaching robot then halts and never restarts —
+# stopping does not increase the distance, and the parked robot never moves.
+# Measured over the three scenarios, 0.70 m keeps every planned route at
+# >= 0.70 m from a parked robot without making any goal unreachable.
+PARKED_ROBOT_RADIUS_M = 0.70
 
 class CostMapNode(Node):
     def get_inflated_map(self, static_map, inflation_cells):
@@ -108,13 +119,42 @@ class CostMapNode(Node):
         return response
 
     def _static_robots(self):
-        """Robots that will not move: dead ones and ones parked on their goal."""
+        """Robots that will not move, with the radius to paint around each.
+
+        Dead and parked robots are both immobile, but they get different
+        radii: a dead one keeps the historical body+clearance footprint, while
+        a parked one is painted out to PARKED_ROBOT_RADIUS_M so that no route
+        the planner returns can trip the controller's emergency stop.
+        """
         merged = {}
         for name in ROBOT_NAMES:
-            pos = self.dead_robots[name] or self.parked_robots[name]
-            if pos is not None:
-                merged[name] = pos
+            if self.dead_robots[name] is not None:
+                merged[name] = (self.dead_robots[name],
+                                self._dead_cells + self._dead_clear_cells)
+            elif self.parked_robots[name] is not None:
+                merged[name] = (self.parked_robots[name], self._parked_cells)
         return merged
+
+    def _paint_disc(self, grid, pos, radius_cells, value=100):
+        """Paint a filled disc, not a square.
+
+        A square of half-width k reaches k*sqrt(2) at its corners, so it blocks
+        41% more than intended in the diagonal directions — enough to close a
+        goal off in a zone as tight as the ones these scenarios use.
+        """
+        info = self.map_static.info
+        res = info.resolution
+        height, width = grid.shape
+        cx = round((pos[0] - info.origin.position.x) / res)
+        cy = round((pos[1] - info.origin.position.y) / res)
+        r2 = radius_cells * radius_cells
+        for dr in range(-radius_cells, radius_cells + 1):
+            for dc in range(-radius_cells, radius_cells + 1):
+                if dr * dr + dc * dc > r2:
+                    continue
+                r, c = cy + dr, cx + dc
+                if 0 <= r < height and 0 <= c < width:
+                    grid[r, c] = value
 
     def _paint_dead_robots(self, grid):
         """Paint immobile robots as occupied cells on a copy of the grid."""
@@ -128,14 +168,8 @@ class CostMapNode(Node):
         height, width = grid.shape
 
         result = numpy.copy(grid)
-        for _, pos in self._static_robots().items():
-            cx = round((pos[0] - ox) / res)
-            cy = round((pos[1] - oy) / res)
-            for dr in range(-radius_cells, radius_cells + 1):
-                for dc in range(-radius_cells, radius_cells + 1):
-                    r, c = cy + dr, cx + dc
-                    if 0 <= r < height and 0 <= c < width:
-                        result[r, c] = 100
+        for _, (pos, cells) in self._static_robots().items():
+            self._paint_disc(result, pos, cells)
         return result
 
     def _precompute_static_maps(self):
@@ -157,6 +191,7 @@ class CostMapNode(Node):
 
         self._inflation_cells    = round(inflation_radius    / res)
         self._cost_cells         = round(cost_radius         / res)
+        self._parked_cells       = round(PARKED_ROBOT_RADIUS_M / res)
         self._dead_cells         = round(DEAD_ROBOT_RADIUS_M    / res)
         self._dead_clear_cells   = round(DEAD_ROBOT_CLEARANCE_M / res)
 
@@ -179,13 +214,13 @@ class CostMapNode(Node):
         inflated = numpy.copy(self._static_inflated)
         cost     = numpy.copy(self._static_cost)
 
-        # Paint each dead robot as an obstacle + cost gradient.
-        # Dead-robot obstacle: body + clearance only (not full inflation_radius),
-        # so a dead robot doesn't cut off entire corridors for live robots.
-        total_inf  = self._dead_cells + self._dead_clear_cells
-        total_cost = self._dead_cells + self._dead_clear_cells
-
-        for name, pos in self._static_robots().items():
+        # Paint every immobile robot as an obstacle plus a cost gradient.
+        # The radius is per-robot: a dead one keeps the historical
+        # body+clearance footprint, deliberately smaller than inflation_radius
+        # so it does not cut off a whole corridor; a parked one is painted out
+        # to PARKED_ROBOT_RADIUS_M so no route the planner returns can trip the
+        # controller's emergency stop against it.
+        for name, (pos, cells) in self._static_robots().items():
             # pos is in map frame (supplied by health_monitor via TF lookup).
             cx = round((pos[0] - ox) / res)
             cy = round((pos[1] - oy) / res)
@@ -193,28 +228,24 @@ class CostMapNode(Node):
             if not (0 <= cx < width and 0 <= cy < height):
                 self.get_logger().warn(
                     f'[COST MAP] {name} at map coords ({cx},{cy}) out of '
-                    f'bounds ({width}×{height}) — skipping paint')
+                    f'bounds ({width}x{height}) — skipping paint')
                 continue
 
-            # Inflated obstacle: square of half-width total_inf
-            for dr in range(-total_inf, total_inf + 1):
-                for dc in range(-total_inf, total_inf + 1):
-                    r, c = cy + dr, cx + dc
-                    if 0 <= r < height and 0 <= c < width:
-                        inflated[r, c] = 100
+            self._paint_disc(inflated, pos, cells)
 
-            # Cost gradient: value decreases linearly from the robot edge outward
-            for dr in range(-total_cost, total_cost + 1):
-                for dc in range(-total_cost, total_cost + 1):
+            # Cost gradient falling off outside the painted disc.
+            grad = self._dead_clear_cells
+            for dr in range(-(cells + grad), cells + grad + 1):
+                for dc in range(-(cells + grad), cells + grad + 1):
                     r, c = cy + dr, cx + dc
-                    if 0 <= r < height and 0 <= c < width:
-                        dist = max(abs(dr), abs(dc))
-                        if dist <= self._dead_cells:
-                            cost[r, c] = 100
-                        elif dist <= total_cost:
-                            dist_from_edge = dist - self._dead_cells
-                            cost_val = self._dead_clear_cells - dist_from_edge + 1
-                            cost[r, c] = max(int(cost_val), int(cost[r, c]))
+                    if not (0 <= r < height and 0 <= c < width):
+                        continue
+                    dist = math.hypot(dr, dc)
+                    if dist <= cells:
+                        cost[r, c] = 100
+                    elif dist <= cells + grad:
+                        cost_val = grad - (dist - cells) + 1
+                        cost[r, c] = max(int(cost_val), int(cost[r, c]))
 
         inflated_data = numpy.ravel(inflated)
         cost_data     = numpy.ravel(cost)
