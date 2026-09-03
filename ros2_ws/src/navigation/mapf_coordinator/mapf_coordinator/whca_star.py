@@ -219,9 +219,27 @@ class WhcaStarNode(Node):
         start_cell = self.world_to_cell(request.start.pose.position)
         goal_cell  = self.world_to_cell(request.goal.pose.position)
 
+        grid = self._get_grid()
+        h, w = grid.shape
+
+        # Reject cells outside the grid BEFORE indexing.  world_to_cell does no
+        # clamping, so a robot outside the arena yields a negative index, and
+        # numpy silently wraps it round to the far edge — the planner then reads
+        # a completely unrelated cell, believes the start is free, and returns
+        # an empty path with no explanation.  Seen with a robot ejected past the
+        # west boundary: start (45, -27) read as (45, 373).
+        for label, (r, c) in (('start', start_cell), ('goal', goal_cell)):
+            if not (0 <= r < h and 0 <= c < w):
+                self.get_logger().error(
+                    f'{label} cell ({r}, {c}) is outside the {h}x{w} map — '
+                    f'the robot or its goal is outside the arena. No plan.')
+                response.plan = Path()
+                response.plan.header.frame_id = 'map'
+                response.plan.header.stamp = self.get_clock().now().to_msg()
+                return response
+
         # Escape start if it landed inside an obstacle (e.g. dead-robot inflation
         # covers the robot's current grid cell → all A* neighbours also blocked).
-        grid = self._get_grid()
         if not self._is_free(grid, start_cell[0], start_cell[1]):
             escaped = self._nearest_free(start_cell, grid)
             if escaped != start_cell:

@@ -39,6 +39,7 @@ which is exactly the correction AMCL publishes.
 import math
 
 import rclpy
+import rclpy.duration
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 
@@ -52,6 +53,17 @@ ROBOT_NAMES = ['alvin', 'teodoro', 'simon']
 # Rate at which the correction is republished (Hz).  Kept above the 20 Hz that
 # the controller polls TF at, so a lookup never falls back on a stale entry.
 PUBLISH_RATE_HZ = 50.0
+
+# How far into the future each correction is post-dated, in seconds.  This is
+# AMCL's `transform_tolerance` and it is not optional: map->odom used to be a
+# /tf_static transform, which tf2 treats as valid at every timestamp.  As a
+# dynamic transform it is only valid up to its stamp, so any consumer asking
+# for a slightly newer time — RViz drawing a frame, pure_pursuit polling the
+# pose — gets an extrapolation error and silently drops the lookup.  In RViz
+# that reads as the map and the paths blinking.  Post-dating declares the
+# correction valid a little ahead, which is safe here because ground truth
+# does not jump between samples.
+TRANSFORM_TOLERANCE_SEC = 0.2
 
 
 def _quat_mul(a, b):
@@ -83,7 +95,8 @@ class GroundTruthLocalizerNode(Node):
     def __init__(self):
         super().__init__('ground_truth_localizer')
 
-        self._truth = {}          # robot -> (position, quaternion) in map
+        self._truth = {}          # robot -> (stamp, position, quaternion) in map
+        self._last_stamp = {}     # robot -> ns of the last correction published
         self._warned = set()      # robots whose missing TF was already logged
 
         self.tf_buffer = Buffer()
@@ -106,23 +119,40 @@ class GroundTruthLocalizerNode(Node):
     def _truth_cb(self, msg: Odometry, robot: str):
         p = msg.pose.pose.position
         q = msg.pose.pose.orientation
-        self._truth[robot] = ((p.x, p.y, p.z), (q.x, q.y, q.z, q.w))
+        # Keep the message stamp: the correction must compose two poses taken
+        # at the SAME instant, and must be published on the simulator's clock.
+        self._truth[robot] = (msg.header.stamp,
+                              (p.x, p.y, p.z),
+                              (q.x, q.y, q.z, q.w))
 
     def _publish_corrections(self):
-        now = self.get_clock().now()
-        for robot, (p_mb, q_mb) in self._truth.items():
+        for robot, (stamp, p_mb, q_mb) in list(self._truth.items()):
+            # Look the wheel odometry up AT THE GROUND-TRUTH STAMP.  Composing
+            # poses sampled at different instants yields a wrong correction
+            # whenever the robot is moving fast — during the spawn drop, or in
+            # a hard turn — and that error lands straight in map->base_link.
             try:
                 t = self.tf_buffer.lookup_transform(
-                    f'{robot}/odom', f'{robot}/base_link', rclpy.time.Time())
+                    f'{robot}/odom', f'{robot}/base_link',
+                    rclpy.time.Time.from_msg(stamp))
             except TransformException:
-                # DiffDrive has not published odom->base_link yet.  Warn once
-                # per robot instead of every tick.
+                # Not yet buffered at that stamp (or DiffDrive is not up).
+                # Skip this tick rather than composing mismatched poses: the
+                # next ground-truth message is 20 ms away.
                 if robot not in self._warned:
                     self._warned.add(robot)
                     self.get_logger().warn(
                         f'{robot}: waiting for {robot}/odom -> '
                         f'{robot}/base_link before correcting map->odom')
                 continue
+
+            # Never emit a stamp that does not advance: RViz and the TF buffer
+            # treat a backwards stamp as a clock jump and flush themselves.
+            last = self._last_stamp.get(robot)
+            stamp_ns = rclpy.time.Time.from_msg(stamp).nanoseconds
+            if last is not None and stamp_ns <= last:
+                continue
+            self._last_stamp[robot] = stamp_ns
 
             tr = t.transform.translation
             ro = t.transform.rotation
@@ -137,7 +167,14 @@ class GroundTruthLocalizerNode(Node):
                     p_mb[2] - rotated[2])
 
             msg = TransformStamped()
-            msg.header.stamp = now.to_msg()
+            # Stamped on the simulator's clock, taken from the ground-truth
+            # message itself — never from this node's own clock, which may not
+            # have received /clock yet and would publish a wall-clock stamp
+            # into a sim-time TF tree — and post-dated by the tolerance above.
+            msg.header.stamp = (
+                rclpy.time.Time.from_msg(stamp)
+                + rclpy.duration.Duration(seconds=TRANSFORM_TOLERANCE_SEC)
+            ).to_msg()
             msg.header.frame_id = 'map'
             msg.child_frame_id = f'{robot}/odom'
             msg.transform.translation.x = p_mo[0]
@@ -163,7 +200,7 @@ class GroundTruthLocalizerNode(Node):
                 'map', f'{robot}/base_link', rclpy.time.Time())
         except TransformException:
             return None
-        (px, py, _), _ = self._truth[robot]
+        _, (px, py, _), _ = self._truth[robot]
         return math.hypot(t.transform.translation.x - px,
                           t.transform.translation.y - py)
 
