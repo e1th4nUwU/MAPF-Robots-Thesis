@@ -184,6 +184,11 @@ class PurePursuitNode(Node):
             dist = numpy.linalg.norm(delta)
             if dist < EMERGENCY_STOP_M:
                 return True  # too close to any robot — stop regardless of priority
+            if r in self._finished:
+                # Parked on its goal: the emergency stop above still protects
+                # against driving into it, but there is nothing to be gained by
+                # yielding right of way to a robot that will never move.
+                continue
             r_idx = (self._priorities.index(r)
                      if r in self._priorities else 999)
             if r_idx >= my_idx or dist >= YIELD_DISTANCE_M:
@@ -243,6 +248,13 @@ class PurePursuitNode(Node):
         # are queried via TF (map frame) inside _should_yield.
         self._robot_name = self.get_namespace().lstrip('/')
         self._priorities = ROBOT_NAMES[:]
+        # Robots parked on their goal.  Yielding priority to one achieves
+        # nothing — it is never going to move out of the way — and because
+        # priority_manager ranks by ascending distance to goal, a parked robot
+        # holds the HIGHEST priority indefinitely.  With goal_grid_spacing at
+        # 0.8 m and YIELD_DISTANCE_M at 1.20 m, every robot whose goal sits
+        # next to a parked one would wait forever, 0.8 m short of arriving.
+        self._finished = set()
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.declare_parameter('v_max', 0.5)
@@ -258,14 +270,23 @@ class PurePursuitNode(Node):
         self.create_subscription(Bool, 'whca_replan', self._whca_replan_callback, 10)
         # Priority order for reactive yield (positions queried via TF inside
         # _should_yield, so no need to subscribe to other robots' /odom).
-        self.create_subscription(String, '/robot_priorities',
-            lambda msg: setattr(self, '_priorities', msg.data.split(',')), 10)
-        self.pub_cmd_vel = self.create_publisher(Twist, 'cmd_vel', 1)
         _latched = QoSProfile(
             depth=1,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
             reliability=ReliabilityPolicy.RELIABLE,
         )
+        self.create_subscription(String, '/robot_priorities',
+            lambda msg: setattr(self, '_priorities', msg.data.split(',')), 10)
+        # Track which robots are parked on their goal, and clear the flag when
+        # one is given a new goal (GNFC may reassign).
+        for _r in ROBOT_NAMES:
+            self.create_subscription(
+                Bool, f'/{_r}/navigation/goal_reached',
+                lambda msg, r=_r: self._finished.add(r) if msg.data else None, 10)
+            self.create_subscription(
+                PoseStamped, f'/{_r}/goal_pose',
+                lambda msg, r=_r: self._finished.discard(r), _latched)
+        self.pub_cmd_vel = self.create_publisher(Twist, 'cmd_vel', 1)
         self.pub_goal_reached = self.create_publisher(Bool, 'navigation/goal_reached', 1)
         self.sub_goal_pose = self.create_subscription(PoseStamped, 'goal_pose', self.callback_goal_pose, _latched)
 
