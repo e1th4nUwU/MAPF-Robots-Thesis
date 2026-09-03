@@ -626,6 +626,7 @@ def launch_setup(context, *args, **kwargs):
                 'odom_topic':    f'/{name}/odom',
                 'odom_frame':    f'{name}/odom',
                 'base_frame':    f'{name}/base_link',
+                'ground_truth_topic': f'/{name}/ground_truth',
             },
         ).toxml()
         robots_urdf.append(urdf)
@@ -706,6 +707,14 @@ def launch_setup(context, *args, **kwargs):
         ],
     )
 
+    ground_truth_localizer = Node(
+        package='swarm_bringup',
+        executable='ground_truth_localizer.py',
+        name='ground_truth_localizer',
+        output='screen',
+        parameters=[{'use_sim_time': True}],
+    )
+
     health_monitor = Node(
         package='swarm_bringup',
         executable='swarm_health_monitor.py',
@@ -723,6 +732,7 @@ def launch_setup(context, *args, **kwargs):
         *robot_nav_nodes,
         teleop_gui,
         viz_bridge,
+        ground_truth_localizer,
         health_monitor,
     ]
 
@@ -823,20 +833,17 @@ def launch_setup(context, *args, **kwargs):
             arguments=[
                 f'/{name}/cmd_vel@geometry_msgs/msg/Twist]gz.msgs.Twist',
                 f'/{name}/odom@nav_msgs/msg/Odometry[gz.msgs.Odometry',
+                # Ground-truth model pose, consumed by ground_truth_localizer
+                # to correct map->odom.  Wheel odometry above still drives
+                # odom->base_link, so the drift stays observable.
+                f'/{name}/ground_truth@nav_msgs/msg/Odometry[gz.msgs.Odometry',
             ],
         ))
-        # map → {name}/odom static TF
-        # Must match the robot's starting world position so A* plans from the
-        # correct location (Gazebo resets odom to (0,0,0) at the robot's spawn point)
-        nodes.append(Node(
-            package='tf2_ros',
-            executable='static_transform_publisher',
-            name=f'map_to_odom_{name}',
-            output='screen',
-            arguments=[str(robot['x']), str(robot['y']), '0',
-                       '0', '0', '0', 'map', f'{name}/odom'],
-            parameters=[{'use_sim_time': True}],
-        ))
+        # map → {name}/odom is NOT static: it is published by
+        # ground_truth_localizer, which corrects it from the simulator's real
+        # pose the way AMCL would.  Pinning it to the spawn point (as it was
+        # before) left wheel-odometry drift uncorrected, so every TF pose the
+        # controller and the coordinator read was dead reckoning.
 
     return nodes
 

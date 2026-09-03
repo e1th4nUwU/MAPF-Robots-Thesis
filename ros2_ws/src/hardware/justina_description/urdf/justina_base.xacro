@@ -48,6 +48,10 @@
     <xacro:arg name="odom_topic"    default="/odom" />
     <xacro:arg name="odom_frame"    default="odom" />
     <xacro:arg name="base_frame"    default="base_link" />
+    <!-- Ground-truth pose straight from the simulator, used by the
+         ground_truth_localizer node to correct map->odom.  See
+         swarm_bringup/scripts/ground_truth_localizer.py. -->
+    <xacro:arg name="ground_truth_topic" default="/ground_truth" />
     <!-- Links -->
     <link name="base_link"/>
     <!-- Body Link -->
@@ -252,6 +256,19 @@
         <odom_topic>$(arg odom_topic)</odom_topic>
       </plugin>
       
+      <!-- Ground-truth odometry: unlike DiffDrive above, OdometryPublisher
+           reports the model's actual world pose rather than integrating wheel
+           velocities, so it carries no dead-reckoning drift.  It replaces the
+           localisation layer (AMCL) that this stack does not run. -->
+      <plugin filename="gz-sim-odometry-publisher-system"
+              name="gz::sim::systems::OdometryPublisher">
+        <odom_frame>map</odom_frame>
+        <robot_base_frame>$(arg base_frame)</robot_base_frame>
+        <odom_topic>$(arg ground_truth_topic)</odom_topic>
+        <odom_publish_frequency>50</odom_publish_frequency>
+        <dimensions>3</dimensions>
+      </plugin>
+
       <plugin filename="gz-sim-joint-state-publisher-system" name="gz::sim::systems::JointStatePublisher">
         <topic>joint_states</topic>
         <joint_name>right_wheel_joint</joint_name>
