@@ -15,6 +15,7 @@ from rclpy.duration import Duration
 from nav_msgs.msg import OccupancyGrid
 from nav_msgs.srv import GetMap
 from std_msgs.msg import Bool
+from geometry_msgs.msg import PoseStamped
 from navig_msgs.msg import RobotHealth
 import numpy
 
@@ -106,8 +107,17 @@ class CostMapNode(Node):
         response.map = self.cost_map
         return response
 
+    def _static_robots(self):
+        """Robots that will not move: dead ones and ones parked on their goal."""
+        merged = {}
+        for name in ROBOT_NAMES:
+            pos = self.dead_robots[name] or self.parked_robots[name]
+            if pos is not None:
+                merged[name] = pos
+        return merged
+
     def _paint_dead_robots(self, grid):
-        """Paint dead robot positions as occupied cells on a copy of the grid."""
+        """Paint immobile robots as occupied cells on a copy of the grid."""
         info = self.map_static.info
         res  = info.resolution
         if res == 0.0:
@@ -118,9 +128,7 @@ class CostMapNode(Node):
         height, width = grid.shape
 
         result = numpy.copy(grid)
-        for _, pos in self.dead_robots.items():
-            if pos is None:
-                continue
+        for _, pos in self._static_robots().items():
             cx = round((pos[0] - ox) / res)
             cy = round((pos[1] - oy) / res)
             for dr in range(-radius_cells, radius_cells + 1):
@@ -177,9 +185,7 @@ class CostMapNode(Node):
         total_inf  = self._dead_cells + self._dead_clear_cells
         total_cost = self._dead_cells + self._dead_clear_cells
 
-        for name, pos in self.dead_robots.items():
-            if pos is None:
-                continue
+        for name, pos in self._static_robots().items():
             # pos is in map frame (supplied by health_monitor via TF lookup).
             cx = round((pos[0] - ox) / res)
             cy = round((pos[1] - oy) / res)
@@ -266,6 +272,15 @@ class CostMapNode(Node):
 
         # Dead robot tracking: {robot_name: (x, y)} or None if alive
         self.dead_robots   = {name: None for name in ROBOT_NAMES}
+        # Robots parked on their goal.  Geometrically they are in exactly the
+        # same situation as a dead one: they occupy space and will not move out
+        # of the way, so the planner has to route around them.  Before this,
+        # priority_manager sent finished robots to the back of the order, which
+        # meant _build_blocked_set ignored their reservations entirely — the
+        # others planned straight through the parked robot and were then halted
+        # 0.65 m short by EMERGENCY_STOP_M, permanently.
+        self.parked_robots = {name: None for name in ROBOT_NAMES}
+        self.last_pos      = {name: None for name in ROBOT_NAMES}
         self.prev_alive    = {name: True  for name in ROBOT_NAMES}
 
 
@@ -288,6 +303,12 @@ class CostMapNode(Node):
             self.create_subscription(
                 RobotHealth, f'/{name}/health',
                 lambda msg, n=name: self._health_cb(msg, n), 10)
+            self.create_subscription(
+                Bool, f'/{name}/navigation/goal_reached',
+                lambda msg, n=name: self._parked_cb(msg, n), 10)
+            self.create_subscription(
+                PoseStamped, f'/{name}/goal_pose',
+                lambda msg, n=name: self._new_goal_cb(n), 10)
 
         # Precompute static inflation/cost maps once — subsequent ticks are fast
         self._precompute_static_maps()
@@ -298,8 +319,36 @@ class CostMapNode(Node):
         # Timer runs last — everything it needs is already created
         self.timer = self.create_timer(1.0, self.callback_timer)
 
+    def _parked_cb(self, msg: Bool, name: str) -> None:
+        """A robot reached its goal — freeze it into the map as an obstacle."""
+        if not msg.data or self.parked_robots[name] is not None:
+            return
+        pos = self.last_pos[name]
+        if pos is None:
+            self.get_logger().warn(
+                f'[COST MAP] {name} reached its goal but no position is known '
+                f'yet — not painting it')
+            return
+        self.parked_robots[name] = pos
+        self.get_logger().info(
+            f'[COST MAP] {name} parked at ({pos[0]:.2f}, {pos[1]:.2f}) '
+            f'— painting it as an obstacle and requesting replan')
+        self.callback_timer()
+        self.pub_replan.publish(Bool(data=True))
+
+    def _new_goal_cb(self, name: str) -> None:
+        """A parked robot was given a new goal — it moves again, so unpaint it."""
+        if self.parked_robots[name] is None:
+            return
+        self.parked_robots[name] = None
+        self.get_logger().info(
+            f'[COST MAP] {name} has a new goal — removing its obstacle')
+        self.callback_timer()
+        self.pub_replan.publish(Bool(data=True))
+
     def _health_cb(self, msg: RobotHealth, name: str) -> None:
         """Track dead robots and react immediately on state transitions."""
+        self.last_pos[name] = (msg.position.x, msg.position.y)
         was_alive = self.prev_alive[name]
         is_alive  = msg.is_alive
         self.prev_alive[name] = is_alive
