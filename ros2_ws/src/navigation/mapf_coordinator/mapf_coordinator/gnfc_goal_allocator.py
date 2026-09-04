@@ -18,6 +18,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
 from geometry_msgs.msg import PoseStamped, Point
+from nav_msgs.msg import OccupancyGrid
 import numpy as np
 
 # Latched QoS: publisher keeps the last message so late-joining subscribers
@@ -140,24 +141,51 @@ class GNFCGoalAllocatorNode(Node):
         # Timer: check if any robot needs a new goal
         self.create_timer(1.0 / publish_rate_hz, self._allocate_and_publish)
 
+        self._inflated_map = None
+        self.create_subscription(
+            OccupancyGrid, '/inflated_map', self._inflated_map_cb, 10)
+
         self.get_logger().info("GNFC Goal Allocator ready")
 
     def _generate_goal_candidates(self):
-        """Generate grid of candidate goal points within goal zone."""
-        x_vals = np.arange(
-            self.goal_zone['x_min'],
-            self.goal_zone['x_max'] + self.grid_spacing,
-            self.grid_spacing
-        )
-        y_vals = np.arange(
-            self.goal_zone['y_min'],
-            self.goal_zone['y_max'] + self.grid_spacing,
-            self.grid_spacing
-        )
-        candidates = [
-            np.array([x, y]) for x in x_vals for y in y_vals
-        ]
-        return candidates
+        """Grid of candidate goal points inside the goal zone.
+
+        The bounds used to be `x_max + spacing`, which overshoots by a whole
+        cell: with a 1.0 m spacing and a zone ending at x=9.0 it produced a
+        candidate at x=9.5, i.e. inside the inflated east wall.  Nearest-cell
+        assignment hid it because the overshooting column was always the
+        farthest one; ordering by depth picks it first.
+        """
+        eps = 1e-9
+        x_vals = np.arange(self.goal_zone['x_min'],
+                           self.goal_zone['x_max'] + eps, self.grid_spacing)
+        y_vals = np.arange(self.goal_zone['y_min'],
+                           self.goal_zone['y_max'] + eps, self.grid_spacing)
+        return [np.array([x, y]) for x in x_vals for y in y_vals]
+
+    def _inflated_map_cb(self, msg: OccupancyGrid):
+        self._inflated_map = msg
+
+    def _is_free(self, point) -> bool:
+        """True when the point is known-free on the inflated map.
+
+        Without this the allocator could hand a robot a goal sitting inside an
+        obstacle, and the robot would replan forever without ever arriving.
+        Unknown map (not received yet) is treated as free so start-up is not
+        blocked; the goal is re-checked on every allocation tick.
+        """
+        grid = self._inflated_map
+        if grid is None:
+            return True
+        info = grid.info
+        if info.resolution <= 0.0:
+            return True
+        col = int((point[0] - info.origin.position.x) / info.resolution)
+        row = int((point[1] - info.origin.position.y) / info.resolution)
+        if not (0 <= row < info.height and 0 <= col < info.width):
+            return False
+        value = grid.data[row * info.width + col]
+        return 0 <= value <= 40
 
     def _odometry_callback(self, msg, robot_name: str):
         """Update robot position in map frame = spawn + odom displacement."""
@@ -184,25 +212,48 @@ class GNFCGoalAllocatorNode(Node):
         # Candidates already taken by robots that still have active goals
         taken = list(self.assigned_goals.values())
         remaining = [g for g in self.candidate_goals
-                     if not any(np.linalg.norm(g - t) < 0.01 for t in taken)]
+                     if not any(np.linalg.norm(g - t) < 0.01 for t in taken)
+                     and self._is_free(g)]
+        if not remaining:
+            self.get_logger().warn(
+                'No free goal candidates left — every cell in the zone is '
+                'occupied on the inflated map (parked robots?)')
+            return
 
+        # Assign the DEEPEST goal to the robot that will arrive first.
+        #
+        # Plain nearest-free-cell is pathological when every robot approaches a
+        # shared goal zone from the same side: the first to arrive takes the
+        # goal closest to the entrance, parks there, and — since cost_map paints
+        # a parked robot as an obstacle — plugs the only way in for everybody
+        # behind it.  Ordering it the other way round means no robot ever has to
+        # drive past one that has already stopped.
+        #
+        # "Deep" is measured along the approach direction: from the centroid of
+        # the robots towards the centre of the goal zone.
+        zone_centre = np.array([
+            0.5 * (self.goal_zone['x_min'] + self.goal_zone['x_max']),
+            0.5 * (self.goal_zone['y_min'] + self.goal_zone['y_max']),
+        ])
+        centroid = np.mean([self.robot_positions[n] for n in pending], axis=0)
+        approach = zone_centre - centroid
+        norm = np.linalg.norm(approach)
+        approach = approach / norm if norm > 1e-6 else np.array([1.0, 0.0])
+
+        # Robots that are closest to the zone are the ones that arrive first.
         robots_sorted = sorted(
             pending,
-            key=lambda name: min(
-                (np.linalg.norm(self.robot_positions[name] - g) for g in remaining),
-                default=float('inf')
-            )
+            key=lambda name: np.linalg.norm(self.robot_positions[name] - zone_centre)
         )
+        # Candidates ordered from deepest to shallowest along the approach.
+        remaining.sort(key=lambda g: -float(np.dot(np.asarray(g, dtype=float), approach)))
 
         for robot_name in robots_sorted:
             if not remaining:
                 self.get_logger().warn(f"No candidates left for {robot_name}!")
                 break
 
-            robot_pos = self.robot_positions[robot_name]
-            distances = [np.linalg.norm(robot_pos - g) for g in remaining]
-            nearest_idx = int(np.argmin(distances))
-            goal = remaining.pop(nearest_idx)
+            goal = remaining.pop(0)
             self.assigned_goals[robot_name] = goal
 
             msg = PoseStamped()
