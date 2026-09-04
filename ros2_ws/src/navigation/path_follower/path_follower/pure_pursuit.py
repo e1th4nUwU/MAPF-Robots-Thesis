@@ -142,6 +142,15 @@ class PurePursuitNode(Node):
                                           goal_x, goal_y, alpha, beta, v_max, w_max)
             self.publish_and_save_data(robot_x, robot_y, robot_a, goal_x, goal_y, v, w)
 
+    def _other_goal_cb(self, msg, robot: str):
+        """Another robot got a goal.  Only a CHANGED goal un-parks it: the topic
+        is TRANSIENT_LOCAL and redelivers the same goal to late subscribers."""
+        goal = (msg.pose.position.x, msg.pose.position.y)
+        prev = self._other_goals.get(robot)
+        self._other_goals[robot] = goal
+        if prev is None or abs(prev[0]-goal[0]) > 1e-3 or abs(prev[1]-goal[1]) > 1e-3:
+            self._finished.discard(robot)
+
     def _set_waiting(self, waiting: bool):
         """Publish the deliberate-stop flag, only when it changes."""
         if waiting == self._waiting:
@@ -275,6 +284,7 @@ class PurePursuitNode(Node):
         # 0.8 m and YIELD_DISTANCE_M at 1.20 m, every robot whose goal sits
         # next to a parked one would wait forever, 0.8 m short of arriving.
         self._finished = set()
+        self._other_goals = {}
         # time.monotonic() of the last empty plan, or None when we have a route.
         self._empty_path_since = None
         self.tf_buffer = Buffer()
@@ -307,7 +317,7 @@ class PurePursuitNode(Node):
                 lambda msg, r=_r: self._finished.add(r) if msg.data else None, 10)
             self.create_subscription(
                 PoseStamped, f'/{_r}/goal_pose',
-                lambda msg, r=_r: self._finished.discard(r), _latched)
+                lambda msg, r=_r: self._other_goal_cb(msg, r), _latched)
         self.pub_cmd_vel = self.create_publisher(Twist, 'cmd_vel', 1)
         # Declares "I am stopped on purpose".  swarm_health_monitor cannot tell
         # a robot that is yielding from one that has failed — both sit still

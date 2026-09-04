@@ -312,6 +312,7 @@ class CostMapNode(Node):
         # 0.65 m short by EMERGENCY_STOP_M, permanently.
         self.parked_robots = {name: None for name in ROBOT_NAMES}
         self.last_pos      = {name: None for name in ROBOT_NAMES}
+        self.last_goal     = {}
         self.prev_alive    = {name: True  for name in ROBOT_NAMES}
 
 
@@ -339,7 +340,7 @@ class CostMapNode(Node):
                 lambda msg, n=name: self._parked_cb(msg, n), 10)
             self.create_subscription(
                 PoseStamped, f'/{name}/goal_pose',
-                lambda msg, n=name: self._new_goal_cb(n), 10)
+                lambda msg, n=name: self._new_goal_cb(msg, n), 10)
 
         # Precompute static inflation/cost maps once — subsequent ticks are fast
         self._precompute_static_maps()
@@ -367,8 +368,17 @@ class CostMapNode(Node):
         self.callback_timer()
         self.pub_replan.publish(Bool(data=True))
 
-    def _new_goal_cb(self, name: str) -> None:
-        """A parked robot was given a new goal — it moves again, so unpaint it."""
+    def _new_goal_cb(self, msg: PoseStamped, name: str) -> None:
+        """A parked robot was given a NEW goal — it moves again, so unpaint it.
+
+        The goal topic is TRANSIENT_LOCAL: the same goal is redelivered to late
+        subscribers, and unpainting on every delivery would flap the map.
+        """
+        goal = (msg.pose.position.x, msg.pose.position.y)
+        prev = self.last_goal.get(name)
+        self.last_goal[name] = goal
+        if prev is not None and abs(prev[0]-goal[0]) < 1e-3 and abs(prev[1]-goal[1]) < 1e-3:
+            return
         if self.parked_robots[name] is None:
             return
         self.parked_robots[name] = None
