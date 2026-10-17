@@ -19,6 +19,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/RobotHealth.msg"
   "msg/SpaceTimeReservation.msg" 
   "srv/ProcessPath.srv"
+  "srv/GetGoalPoints.srv"
   DEPENDENCIES std_msgs geometry_msgs nav_msgs
 )
 

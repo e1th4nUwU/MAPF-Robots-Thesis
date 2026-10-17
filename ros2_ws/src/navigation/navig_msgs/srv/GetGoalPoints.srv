@@ -1,0 +1,29 @@
+# Request: Parámetros del algoritmo de asignación
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+
+## Región meta
+geometry_msgs/Polygon region
+
+## Mapa de ocupación (con inflado de obstáculos aplicado)
+nav_msgs/OccupancyGrid map
+
+## Posiciones de los robots. El orden del arreglo es la prioridad:
+## robots[0] es el de mayor prioridad.
+geometry_msgs/Point32[] robots
+
+## Separación mínima entre metas, en metros (la s del Algoritmo 3)
+float32 min_separation
+
+---
+
+# Response
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+
+## Booleano que determina si se pudo o no asignar a los agentes
+bool success
+
+## Mensaje de error
+string error_message
+
+## Metas en el mismo orden que robots: goals[i] le toca a robots[i]
+geometry_msgs/Point32[] goals
