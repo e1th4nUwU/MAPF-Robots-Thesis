@@ -45,7 +45,10 @@ from launch.actions import (
     GroupAction,
     LogInfo,
 )
-from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.launch_description_sources import (
+    FrontendLaunchDescriptionSource,
+    PythonLaunchDescriptionSource,
+)
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node, PushRosNamespace
 from launch_ros.substitutions import FindPackageShare
@@ -107,7 +110,13 @@ SCENARIO_GOAL_ZONES = {
     # 1.00 m leaves 0.10 m of margin beyond the worst-case parking error.
     'towers': {'x_min': 7.5, 'x_max': 9.0, 'y_min': -1.5, 'y_max': 1.5, 'spacing': 1.0},
     'rocks':  {'x_min': 8.0, 'x_max': 9.0, 'y_min': -1.5, 'y_max': 1.5, 'spacing': 1.0},
-    'maze':   {'x_min': 7.5, 'x_max': 9.0, 'y_min': -1.0, 'y_max': 0.6, 'spacing': 1.0},
+    # maze: widened to the whole usable east end of the middle corridor.
+    # The corridor runs y in (-2, +2) with 0.2 m walls, so after the 0.6 m
+    # inflation a robot centre fits in y in (-1.3, 1.3); to the east,
+    # bar_m4 at x=6.0 inflates out to 6.7 and the perimeter wall inflates
+    # in from 9.3. Staying 0.1 m inside both bounds gives the zone below,
+    # which holds 3x3 candidates at 1.0 m spacing instead of 2x2.
+    'maze':   {'x_min': 6.8, 'x_max': 9.2, 'y_min': -1.2, 'y_max': 1.2, 'spacing': 1.0},
 }
 
 # ── SDF primitive helpers ──────────────────────────────────────────────────────
@@ -294,7 +303,7 @@ def _build_maze(show_goals=False):
         y=-6  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓
               x=-10                     x=+10
 
-    Goal zone: x∈[7.5,9.0], y∈[-1.0,1.0] — east end of middle corridor.
+    Goal zone: x∈[6.8,9.2], y∈[-1.2,1.2] — east end of middle corridor.
     """
     W = ARENA_X   # 10
     h = WALL_H    # 1.5
@@ -655,13 +664,35 @@ def launch_setup(context, *args, **kwargs):
         launch_arguments={'gz_args': f'-r -v 3 {world_path}'}.items(),
     )
 
-    clock_bridge = Node(
+    # /clock gets a bridge of its own, and specifically ros_gz_bridge's, because
+    # that one declares the ROS publisher with the CLOCK QoS profile:
+    # best-effort, depth 1.  Gazebo emits /clock once per physics step — 1 kHz
+    # with the 1 ms max_step_size below — and a reliable, queued bridge turns
+    # any momentary CPU starvation (cost_map precomputing its static maps takes
+    # ~15 s of one core at startup) into a backlog it never drains: measured
+    # 69 s behind and still growing at +0.7 s/s.  Every node then runs tens of
+    # seconds behind the TF and odometry stamps Gazebo is producing, so RViz
+    # finds every transform far in the future, and the bursts of catch-up
+    # clock samples read to it as time jumping backwards — it answers by
+    # clearing its TF buffer, which is the flicker.  Depth 1 best-effort cannot
+    # queue, so after a stall the clock simply resynchronises.
+    clock_bridge = IncludeLaunchDescription(
+        FrontendLaunchDescriptionSource(
+            PathJoinSubstitution([
+                FindPackageShare('ros_gz_bridge'), 'launch', 'clock_bridge.launch',
+            ])
+        ),
+        launch_arguments={'bridge_name': 'clock_bridge'}.items(),
+    )
+
+    # Global TF from Gazebo (all robots in one topic).  Kept in a separate
+    # process so it never competes with the clock stream for the one thread a
+    # parameter_bridge has.
+    tf_bridge = Node(
         package='ros_gz_bridge',
         executable='parameter_bridge',
-        name='clock_bridge',
+        name='tf_bridge',
         arguments=[
-            '/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock',
-            # Global TF from Gazebo (all robots in one topic)
             '/tf@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V',
         ],
         output='screen',
@@ -680,8 +711,11 @@ def launch_setup(context, *args, **kwargs):
         }.items(),
     )
 
-    # Per-robot navigation: a_star + path_smoothing + pure_pursuit
-    robot_nav_nodes = [
+    # Per-robot navigation: a_star + path_smoothing + pure_pursuit.
+    # planner:=none leaves it out, which is useful when only the goal
+    # allocation is under test: the robots then stay parked where they
+    # spawned and nothing competes for /get_inflated_map or cmd_vel.
+    robot_nav_nodes = [] if planner == 'none' else [
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 PathJoinSubstitution([
@@ -735,6 +769,7 @@ def launch_setup(context, *args, **kwargs):
         LogInfo(msg=f"Using generated map yaml: {map_yaml_path}"),
         gazebo,
         clock_bridge,
+        tf_bridge,
         planning,
         *robot_nav_nodes,
         teleop_gui,
@@ -870,7 +905,8 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'planner',
             default_value='independent',
-            description='MAPF mode: independent | whca | cbs',
+            description='MAPF mode: independent | whca | cbs | none '
+                        '(none: no per-robot navigation at all)',
         ),
         DeclareLaunchArgument(
             'show_gazebo_goals',
