@@ -1,4 +1,4 @@
-# Arquitectura del sistema — Tópicos, GNFC y WHCA*
+# Arquitectura del sistema — Tópicos, GRPA y WHCA*
 
 ## Mapa de tópicos
 
@@ -23,9 +23,9 @@
 
 | Tópico | Tipo | Quién publica | Quién suscribe | Descripción |
 |--------|------|---------------|----------------|-------------|
-| `/alvin/goal_pose` | `PoseStamped` | GNFC allocator / usuario | `pure_pursuit`, `whca_coordinator`, `priority_manager` | Meta de navegación del robot |
+| `/alvin/goal_pose` | `PoseStamped` | GRPA allocator / usuario | `pure_pursuit`, `whca_coordinator`, `priority_manager` | Meta de navegación del robot |
 | `/alvin/cmd_vel` | `Twist` | `pure_pursuit` | Gazebo (puente ROS-GZ) | Comandos de velocidad (v, ω) |
-| `/alvin/odom` | `Odometry` | Gazebo | `swarm_viz_bridge`, GNFC | Odometría local (origen = spawn del robot) |
+| `/alvin/odom` | `Odometry` | Gazebo | `swarm_viz_bridge`, GRPA | Odometría local (origen = spawn del robot) |
 | `/alvin/odom_map` | `Odometry` | `swarm_viz_bridge` | RViz, `swarm_health_monitor` | Odometría corregida al frame `map` |
 | `/alvin/path_planning/path` | `Path` | `whca_star` / `a_star` | RViz | Trayectoria planificada (para visualización) |
 | `/alvin/path_planning/smoothed_path` | `Path` | `path_smoothing` | RViz | Trayectoria suavizada |
@@ -38,7 +38,7 @@
 
 ---
 
-## Cómo funciona GNFC (Greedy Nearest-Free-Cell)
+## Cómo funciona GRPA (Greedy Reachability-Preserving Assignment)
 
 **Problema que resuelve:** asignar una meta única dentro de una zona rectangular a cada robot,
 sin que dos robots vayan al mismo punto.
@@ -64,16 +64,17 @@ sin que dos robots vayan al mismo punto.
 ### Flujo de datos
 
 ```
-GNFC lee /{robot}/odom
+GRPA lee /{robot}/odom
   → calcula distancias a candidatos libres
-  → asigna el más cercano a cada robot que lo necesite
+  → asigna el más cercano a cada robot que lo necesite (estrategia `nearest`;
+    GRPA sustituirá este paso por uno que preserve la alcanzabilidad)
   → publica /{robot}/goal_pose
         ↓
   pure_pursuit recibe goal → planea → sigue ruta
         ↓
   pure_pursuit publica /{robot}/navigation/goal_reached
         ↓
-  GNFC reasigna solo ese robot (los demás conservan su meta)
+  GRPA reasigna solo ese robot (los demás conservan su meta)
 ```
 
 ---

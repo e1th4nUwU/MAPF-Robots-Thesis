@@ -21,7 +21,7 @@ while avoiding collisions with both obstacles and other robots.
 ### Fixed Goal Zones per Scenario
 
 Each scenario has a **deterministic goal area** (the green rectangle in RViz/Gazebo).
-When using `planner:=whca` or `planner:=cbs`, the **GNFC allocator** auto-launches
+When using `planner:=whca` or `planner:=cbs`, the legacy **GNFC allocator** auto-launches
 with that zone and each robot's spawn position, so goal assignment is reproducible
 across runs — essential for testing WHCA*/CBS behaviour.
 
@@ -161,9 +161,11 @@ ros2 topic pub --once /simon/goal_pose geometry_msgs/msg/PoseStamped \
 
 RViz shows each robot's planned path in its color (red = alvin, green = teodoro, blue = simon).
 
-### Automated Goal Zone Assignment (GNFC)
+### Automated Goal Zone Assignment (GNFC, legacy)
 
-**Greedy Nearest-Free-Cell (GNFC)** assigns each robot a unique goal point within a rectangular zone (nearest unassigned cell wins).
+**Greedy Nearest-Free-Cell (GNFC)** assigns each robot a unique goal point within a
+rectangular zone: the nearest unassigned free cell wins. It is the allocator the WHCA*
+runs have used so far, and it is being superseded by the `swarm_mapf` service below.
 
 With `planner:=whca` or `planner:=cbs`, GNFC is **launched automatically** with the scenario's fixed goal zone and each robot's spawn position — no extra terminal needed.
 
@@ -189,6 +191,50 @@ ros2 launch mapf_coordinator goal_zone.launch.py \
 - `x_min`, `x_max`: zone boundaries in X (metres)
 - `y_min`, `y_max`: zone boundaries in Y (metres)
 - `spacing`: grid spacing between candidate goal points (metres)
+
+### Goal Allocation Service (`swarm_mapf`)
+
+The allocator is being rebuilt as a **service** instead of a node that publishes goals on a
+timer. `swarm_mapf/goal_allocator` answers `~/get_goal_points`, so whoever decides to send
+the swarm somewhere asks for the goals and gets them back, with the reason when it fails:
+
+```
+navig_msgs/srv/GetGoalPoints
+  geometry_msgs/Polygon      region          # goal region, any polygon
+  nav_msgs/OccupancyGrid     map             # already inflated
+  geometry_msgs/Point32[]    robots          # in priority order
+  float32                    min_separation  # metres between goals
+  ---
+  bool                       success
+  string                     error_message
+  geometry_msgs/Point32[]    goals            # one per robot, same order
+```
+
+Candidates are the points of a lattice of pitch `min_separation`, centred in the bounding
+box of the region, that fall inside the polygon and on a free cell. Taking the pitch equal
+to the separation is what makes a pairwise separation check unnecessary.
+
+**Allocators** live in `swarm_mapf/allocators/` behind a registry, one function each, so a
+new strategy is a new file plus one line:
+
+| Name | Status | What it does |
+|---|---|---|
+| `nearest` | implemented | Closest free candidate per robot, in priority order. The Chapter 6 baseline |
+| `grpa` | pending | Greedy Reachability-Preserving Assignment: picks goals that do not cut off the robots still unassigned |
+
+**Visual test bench** — scenario, RViz and a one-shot client that builds the request out of
+the running system (inflated map from `/get_inflated_map`, robot poses from tf):
+
+```bash
+ros2 launch swarm_mapf allocator_test.launch.py scenario:=maze
+```
+
+RViz shows the goal region as a cyan polygon, every admissible candidate as a yellow cube,
+and the assigned goals as spheres in each robot's colour. When the answer is a failure, the
+region and the candidates are published anyway — seeing them is the whole diagnosis.
+Path planning is off by default here (`planner:=none`).
+
+---
 
 ### Visualizing Goal Zones (without goal assignment)
 
@@ -256,7 +302,13 @@ ros2_ws/src/
 │   │   └── launch/
 │   │       ├── motion_planning.launch.py  # Shared infra: map_server + cost_map
 │   │       └── robot_nav.launch.py        # Per-robot: a_star + path_smoothing + pure_pursuit
+│   ├── mapf_coordinator/      # WHCA*/CBS coordination + legacy GNFC allocator
 │   ├── navig_msgs/            # Custom ROS messages/services
+│   ├── swarm_mapf/            # Goal allocation service (GetGoalPoints)
+│   │   ├── goal_allocator.py  # The service node
+│   │   ├── grid.py            # world <-> cell conversions
+│   │   ├── region.py          # ray casting + candidate lattice
+│   │   └── allocators/        # One file per strategy (nearest, grpa)
 │   ├── path_follower/         # Trajectory follower (Pure Pursuit)
 │   │   └── pure_pursuit.py    # robot_frame param for namespaced TF lookup
 │   └── path_planner/          # Path planners (A*, RRT, Potential Fields)
