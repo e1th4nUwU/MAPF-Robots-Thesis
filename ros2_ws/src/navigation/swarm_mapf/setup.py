@@ -30,6 +30,7 @@ setup(
         'console_scripts': [
             'goal_allocator = swarm_mapf.goal_allocator:main',
             'allocation_client = swarm_mapf.allocation_client:main',
+            'mapf_planner = swarm_mapf.mapf_planner:main',
         ],
     },
 )
