@@ -119,6 +119,59 @@ SCENARIO_GOAL_ZONES = {
     'maze':   {'x_min': 6.8, 'x_max': 9.2, 'y_min': -1.2, 'y_max': 1.2, 'spacing': 1.0},
 }
 
+# ── Shared bottlenecks ────────────────────────────────────────────────────────
+# A funnel every robot must pass through.  Without one the fleet drives
+# three parallel lines to three goals and the MAPF layer is never asked
+# to do anything: robots meet only where they converge at the very end,
+# past the cooperation window, and no robot ever yields.
+#
+# Gap arithmetic: cost_map inflates obstacles by 0.6 m, so a gap of width
+# g leaves a band of g - 1.2 m for the robot centre.  g = 2.0 m leaves
+# 0.8 m, which is exactly one cell of the planning lattice — single file,
+# one robot at a time, which is the case WHCA* exists for.
+#
+# Declared here, once, because the Gazebo geometry and the map image are
+# painted by two separate hand-written copies of the obstacle list.  A
+# bottleneck present in only one of them is either a robot driving
+# through a wall or a planner routing around one that is not there.
+BOTTLENECK_GAP = 2.0
+
+# (cx, cy, lx, ly) of each wall segment, in metres
+SCENARIO_BOTTLENECKS = {
+    # x = -7.0 for both, one metre east of the spawns, with the gap on
+    # y = 0.  Searched rather than guessed: the position has to leave the
+    # three robots connected to the goal zone, and most do not.  A gap on
+    # y = 0 at x = -5.5 for instance opens onto the inflated tower at
+    # (-4, 0) and dead-ends.  See the note above about the two copies
+    'towers': [
+        (-7.0, -(ARENA_Y + BOTTLENECK_GAP / 2) / 2, WALL_T,
+         ARENA_Y - BOTTLENECK_GAP / 2),
+        (-7.0, (ARENA_Y + BOTTLENECK_GAP / 2) / 2, WALL_T,
+         ARENA_Y - BOTTLENECK_GAP / 2),
+    ],
+    'rocks': [
+        (-7.0, -(ARENA_Y + BOTTLENECK_GAP / 2) / 2, WALL_T,
+         ARENA_Y - BOTTLENECK_GAP / 2),
+        (-7.0, (ARENA_Y + BOTTLENECK_GAP / 2) / 2, WALL_T,
+         ARENA_Y - BOTTLENECK_GAP / 2),
+    ],
+    # The maze needed a second one.  Its divider gap is already a single
+    # cell, but the north and south robots use different gaps and never
+    # contend for either, and the middle corridor is 2.8 m wide after
+    # inflation, which is three lattice columns: one lane per robot all
+    # the way east.  Measured, not assumed: every goal assignment tried
+    # on the old layout gave zero waits.  This pinches the middle
+    # corridor down to one cell at x = 0, east of where the three merge,
+    # so the fleet has to queue and WHCA* finally has to sequence it
+    'maze': [
+        (0.0, (ARENA_Y / 3 + BOTTLENECK_GAP / 2) / 2, WALL_T,
+         ARENA_Y / 3 - BOTTLENECK_GAP / 2),
+        (0.0, -(ARENA_Y / 3 + BOTTLENECK_GAP / 2) / 2, WALL_T,
+         ARENA_Y / 3 - BOTTLENECK_GAP / 2),
+    ],
+}
+
+
 # ── SDF primitive helpers ──────────────────────────────────────────────────────
 
 def _box(name, cx, cy, cz, lx, ly, lz,
@@ -206,6 +259,14 @@ def _goal_marker_for_zone(name, zone):
 
 # ── Scenario geometry ──────────────────────────────────────────────────────────
 
+def _bottleneck_sdf(scenario):
+    """Render the scenario's bottleneck walls from SCENARIO_BOTTLENECKS."""
+    return [_box(f'choke_{scenario}_{i}', cx, cy, WALL_H / 2,
+                 lx, ly, WALL_H, color=C_MAZE_WALL)
+            for i, (cx, cy, lx, ly) in
+            enumerate(SCENARIO_BOTTLENECKS.get(scenario, []))]
+
+
 def _build_towers(show_goals=False):
     """4-row staggered slalom of rust-red cylinders.
 
@@ -226,6 +287,7 @@ def _build_towers(show_goals=False):
     r, h = 0.28, 2.0
     parts = [_cylinder(f'tower_{i}', x, y, h/2, r, h, color=C_TOWER)
              for i, (x, y) in enumerate(positions)]
+    parts += _bottleneck_sdf('towers')
     parts += _boundary_walls()
     if show_goals:
         parts.append(_goal_marker_for_zone('goal', SCENARIO_GOAL_ZONES['towers']))
@@ -266,6 +328,7 @@ def _build_rocks(show_goals=False):
     for i, (cx, cy, lx, ly, lz, yd) in enumerate(boxes):
         parts.append(_box(f'rock_b{i}', cx, cy, lz/2,
                           lx, ly, lz, yaw=math.radians(yd), color=C_ROCK_BOX))
+    parts += _bottleneck_sdf('rocks')
     parts += _boundary_walls()
     if show_goals:
         parts.append(_goal_marker_for_zone('goal', SCENARIO_GOAL_ZONES['rocks']))
@@ -282,9 +345,12 @@ def _build_maze(show_goals=False):
     cross the corridor in a straight line.  It must zig-zag between
     bars with ~1 m amplitude.
 
-    Dividers leave a single 2 m gap at x=-1..1 — effectively 1 m wide
-    after corner inflation, narrow enough that two robots cannot pass
-    simultaneously → WHCA* must sequence them.
+    Dividers leave a single 2 m gap at x=-5.5..-3.5 — 0.8 m wide after
+    inflation, exactly one lattice cell, so two robots cannot pass
+    simultaneously → WHCA* must sequence them.  The gap sits west of
+    centre on purpose: the three robots spawn at x=-8 and reach it
+    within the cooperation window, so they negotiate while the plan
+    still covers them instead of converging past the horizon.
 
     Layout (top view, S = glued to south side, N = north):
 
@@ -292,11 +358,11 @@ def _build_maze(show_goals=False):
               [alvin →]   ←y=+5
                   ║N            ║N            bar_n2,n4 (x=-3,+6;  y=4..6)
               ║S        ║S                   bar_n1,n3 (x=-6,+3; y=2..4)
-        y=+2  ═══════════ GAP ═══════════════
+        y=+2  ════ GAP ════════════════════════
                   ║N            ║N            bar_m1,m3 (x=-6,+3; y=0..2)
               [teodoro →]
                           ║S        ║S        bar_m2,m4 (x=-3,+6; y=-2..0)
-        y=-2  ═══════════ GAP ═══════════════
+        y=-2  ════ GAP ════════════════════════
               ║N        ║N                   bar_s1,s3 (x=-6,+3; y=-4..-2)
                   ║S            ║S            bar_s2,s4 (x=-3,+6; y=-6..-4)
               [simon →]   ←y=-5
@@ -319,12 +385,12 @@ def _build_maze(show_goals=False):
     # a forced zig-zag of ~2 m amplitude across the corridor.
     BAR = 2.0
 
-    parts = [
+    parts = _bottleneck_sdf('maze') + [
         # ── Horizontal sandstone dividers with central 2 m gaps ──
-        _box('wall_n_left',  -5.5,  2.0, h/2, 9.0, t, h, color=C_MAZE_WALL),
-        _box('wall_n_right',  5.5,  2.0, h/2, 9.0, t, h, color=C_MAZE_WALL),
-        _box('wall_s_left',  -5.5, -2.0, h/2, 9.0, t, h, color=C_MAZE_WALL),
-        _box('wall_s_right',  5.5, -2.0, h/2, 9.0, t, h, color=C_MAZE_WALL),
+        _box('wall_n_left',  -7.75,  2.0, h/2,  4.5, t, h, color=C_MAZE_WALL),
+        _box('wall_n_right',  3.25,  2.0, h/2, 13.5, t, h, color=C_MAZE_WALL),
+        _box('wall_s_left',  -7.75, -2.0, h/2,  4.5, t, h, color=C_MAZE_WALL),
+        _box('wall_s_right',  3.25, -2.0, h/2, 13.5, t, h, color=C_MAZE_WALL),
 
         # ── North corridor: S, N, S, N pattern (4 chicanes) ──
         _box('bar_n1', -6.0,  3.0, h/2, t, BAR, h, color=C_MAZE_BAR),  # S, y∈[2,4]
@@ -438,6 +504,12 @@ def _paint_boundaries(grid):
     _paint_rect(grid, ARENA_X, 0.0, WALL_T, span_y)
 
 
+def _paint_bottleneck(grid, scenario):
+    """Paint the scenario's bottleneck walls from SCENARIO_BOTTLENECKS."""
+    for cx, cy, lx, ly in SCENARIO_BOTTLENECKS.get(scenario, []):
+        _paint_rect(grid, cx, cy, lx, ly)
+
+
 def _build_scenario_map_image(scenario):
     width = int((ARENA_X * 2.0) / MAP_RESOLUTION)
     height = int((ARENA_Y * 2.0) / MAP_RESOLUTION)
@@ -453,6 +525,7 @@ def _build_scenario_map_image(scenario):
         ]
         for x, y in positions:
             _paint_circle(grid, x, y, 0.28)
+        _paint_bottleneck(grid, 'towers')
 
     elif scenario == 'rocks':
         spheres = [
@@ -479,14 +552,17 @@ def _build_scenario_map_image(scenario):
             _paint_circle(grid, x, y, r)
         for x, y, lx, ly, yaw_deg in boxes:
             _paint_rotated_rect(grid, x, y, lx, ly, math.radians(yaw_deg))
+        _paint_bottleneck(grid, 'rocks')
 
     elif scenario == 'maze':
+        _paint_bottleneck(grid, 'maze')
         BAR = 2.0
-        # Horizontal dividers with central 2 m gaps (x∈[-1,1] open)
-        _paint_rect(grid, -5.5,  2.0, 9.0, WALL_T)
-        _paint_rect(grid,  5.5,  2.0, 9.0, WALL_T)
-        _paint_rect(grid, -5.5, -2.0, 9.0, WALL_T)
-        _paint_rect(grid,  5.5, -2.0, 9.0, WALL_T)
+        # Horizontal dividers with the gap at x∈[-5.5,-3.5], west of
+        # centre so the three corridors merge inside the window
+        _paint_rect(grid, -7.75,  2.0,  4.5, WALL_T)
+        _paint_rect(grid,  3.25,  2.0, 13.5, WALL_T)
+        _paint_rect(grid, -7.75, -2.0,  4.5, WALL_T)
+        _paint_rect(grid,  3.25, -2.0, 13.5, WALL_T)
         # North corridor — 4 alternating chicanes (S, N, S, N)
         _paint_rect(grid, -6.0,  3.0, WALL_T, BAR)
         _paint_rect(grid, -3.0,  5.0, WALL_T, BAR)
