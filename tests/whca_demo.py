@@ -23,17 +23,22 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Circle, Rectangle
 from matplotlib.widgets import Button, Slider
 
+# Package location
 PACKAGE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     '..', 'ros2_ws', 'src', 'navigation', 'swarm_mapf')
 sys.path.insert(0, PACKAGE)
 
+# The planner itself, imported from the ROS package rather than
+# copied, so this demo breaks when the algorithm breaks
 from swarm_mapf.planners import whca          # noqa: E402
+
 
 CELL = 1.0           # one character of the drawing is one lattice cell
 WINDOW = 64          # steps of cooperation; large, to see the algorithm
-SERIES = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100']
 
+# Colors
+SERIES = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100']
 WALL = '#b8b6b0'
 FLOOR = '#ffffff'
 GRIDLINE = '#e4e2dc'
@@ -224,10 +229,15 @@ SCENARIOS = [
 ]
 
 
-# ─── The least a map has to be for the planner ───────────────────────
-
 class Grid:
-    """What the planner sees of a nav_msgs/OccupancyGrid."""
+    """
+    What the planner sees of a nav_msgs/OccupancyGrid
+
+    Six attributes are read and nothing else: info.width, info.height,
+    info.resolution, info.origin.position.x, info.origin.position.y and
+    data. That is the whole contact surface between the planner and ROS,
+    and the reason this file can replace the message with a few lines
+    """
 
     class _Info:
         class _Origin:
@@ -238,6 +248,14 @@ class Grid:
         resolution = CELL
 
     def __init__(self, width, height, data):
+        """
+        Build an empty grid and fill it with the given occupancy
+
+        Args:
+            width: columns of the grid
+            height: rows of the grid
+            data: occupancy row by row, 0 free and 100 occupied
+        """
         self.info = Grid._Info()
         self.info.width = width
         self.info.height = height
@@ -246,7 +264,22 @@ class Grid:
 
 
 def parse(drawing):
-    """Turn the drawing into a grid, the starts and the goals."""
+    """
+    Turn the drawing into a grid, the starts and the goals
+
+    The first line of the drawing is the top row, which is the highest
+    y, so the rows are flipped: a grid counts rows upwards from its
+    origin and a drawing reads them downwards from the top
+
+    Args:
+        drawing: the map as one multi-line string, where # is a wall,
+            . is free, an uppercase letter is where a robot starts and
+            the matching lowercase one is where it is going
+
+    Returns:
+        The tuple (grid, starts, goals), where starts and goals map a
+        robot name to its (i, j) cell
+    """
     rows = [row for row in drawing.strip('\n').split('\n') if row.strip()]
     height, width = len(rows), max(len(row) for row in rows)
     data = [0] * (width * height)
@@ -266,7 +299,17 @@ def parse(drawing):
 
 
 def build(scenario):
-    """Assemble the scenario. It does not plan it."""
+    """
+    Assemble a scenario. It does not plan it
+
+    Args:
+        scenario: an entry of SCENARIOS
+
+    Returns:
+        The tuple (grid, starts, goals). starts is ordered by the
+        priority the scenario declares, because whca reads the priority
+        from the order of that dictionary and nowhere else
+    """
     grid, starts, goals = parse(scenario['map'])
     goals.update(scenario.get('goals', {}))
 
@@ -275,18 +318,38 @@ def build(scenario):
     return grid, {name: starts[name] for name in order}, goals
 
 
-# ─── The window ──────────────────────────────────────────────────────
-
 def _wrap(text, width=62):
-    """Break the text to a fixed width, keeping the paragraphs."""
+    """
+    Break the text to a fixed width, keeping the paragraphs
+
+    Done here and not with the wrap argument of matplotlib, which wraps
+    to the figure and not to the axes, so the text ran off the panel
+
+    Args:
+        text: the paragraphs, separated by blank lines
+        width: characters per line
+
+    Returns:
+        The same text with the line breaks inserted
+    """
     return '\n\n'.join(textwrap.fill(paragraph, width)
                        for paragraph in text.split('\n\n'))
 
 
 class Demo:
-    """One scenario at a time: plan it, then walk through it."""
+    """
+    One scenario at a time: plan it, then walk through it
+
+    Loading a scenario only builds the map. Nothing is planned until
+    solve() runs, so the window shows the instance before it shows an
+    answer, and an instance with no solution looks different from one
+    that has not been tried
+    """
 
     def __init__(self):
+        """
+        Lay out the window: map, panel, controls and the timer.
+        """
         self.fig = plt.figure(figsize=(15, 7.6), facecolor=SURFACE)
         self.fig.canvas.manager.set_window_title('WHCA* step by step')
 
@@ -315,6 +378,17 @@ class Demo:
         self.load()
 
     def _button(self, x, text, action):
+        """
+        Add one button to the control row
+
+        Args:
+            x: left edge, in figure coordinates
+            text: the label
+            action: what to call when it is pressed, without arguments
+
+        Returns:
+            The button, which has to be kept alive or it stops working
+        """
         axes = self.fig.add_axes([x, 0.04, 0.10, 0.06])
         button = Button(axes, text, color=SURFACE, hovercolor='#eeece6')
         button.label.set_fontsize(9)
@@ -325,11 +399,17 @@ class Demo:
     # ── scenario ──
 
     def move(self, offset):
+        """
+        Switch scenario, wrapping around at either end
+
+        Args:
+            offset: how many scenarios forward, negative to go back
+        """
         self.index = (self.index + offset) % len(SCENARIOS)
         self.load()
 
     def load(self):
-        """Set the scenario up without planning it yet."""
+        """Build the current scenario and show it unplanned."""
         self.pause()
         self.scenario = SCENARIOS[self.index]
         self.grid, self.starts, self.goals = build(self.scenario)
@@ -344,7 +424,12 @@ class Demo:
         self.explain()
 
     def solve(self):
-        """Run the planner and leave the solution ready to walk."""
+        """
+        Run the planner and leave the solution ready to walk
+
+        The full routes also go to the terminal, where they can be read
+        as cells instead of looked at
+        """
         self.pause()
         self.paths = whca.plan(self.starts, self.goals, self.grid,
                                CELL, window=WINDOW)
@@ -368,11 +453,21 @@ class Demo:
     # ── walking through it ──
 
     def _fit_slider(self):
+        """Match the slider range to the plan that is loaded."""
         self.slider.valmax = max(self.last_step, 1)
         self.slider.ax.set_xlim(0, max(self.last_step, 1))
         self.slider.set_val(self.step)
 
     def go_to(self, step, move_slider=True):
+        """
+        Show one step of the plan
+
+        Args:
+            step: which step, clamped to the plan; out of range values
+                are the normal case, since the buttons just add one
+            move_slider: False when the slider is what asked for the
+                move, so setting it again does not loop back here
+        """
         if not self.planned or self.paths is None:
             return
         step = max(0, min(step, self.last_step))
@@ -386,6 +481,7 @@ class Demo:
         self.fig.canvas.draw_idle()
 
     def play(self):
+        """Start walking the plan on a timer, or stop if it is running."""
         if self.paths is None:
             return
         if self.running:
@@ -398,6 +494,7 @@ class Demo:
         self.timer.start()
 
     def pause(self):
+        """Stop the timer, whether or not it was running."""
         if getattr(self, 'running', False):
             self.timer.stop()
         self.running = False
@@ -405,6 +502,7 @@ class Demo:
             self.b_play.label.set_text('play')
 
     def _tick(self):
+        """Advance one step, and stop at the end instead of looping."""
         if self.step >= self.last_step:
             self.pause()
             self.fig.canvas.draw_idle()
@@ -414,18 +512,42 @@ class Demo:
     # ── where a robot is ──
 
     def where(self, name, step):
+        """
+        Say which cell a robot is on at a given step
+
+        A robot that already arrived stays on its last cell, which is
+        what it does in reality, so a short path does not make it vanish
+
+        Args:
+            name: robot name
+            step: which step
+
+        Returns:
+            The (i, j) cell, or its start when nothing is planned
+        """
         path = (self.paths or {}).get(name)
         if not path:
             return self.starts[name]
         return path[min(step, len(path) - 1)]
 
     def waiting(self, name, step):
+        """
+        Tell whether a robot stayed put on this step
+
+        Args:
+            name: robot name
+            step: which step
+
+        Returns:
+            True when it is on the same cell it was on the step before
+        """
         path = (self.paths or {}).get(name)
         return bool(path) and 0 < step < len(path) and path[step] == path[step - 1]
 
     # ── drawing ──
 
     def draw(self):
+        """Redraw the map: walls, goals, routes and the robots."""
         ax = self.map_ax
         ax.clear()
         ax.set_facecolor(SURFACE)
@@ -483,6 +605,7 @@ class Demo:
             side.set_visible(False)
 
     def explain(self):
+        """Redraw the right panel: description, parameters and result."""
         ax = self.text_ax
         ax.clear()
         ax.axis('off')
