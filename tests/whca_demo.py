@@ -1,18 +1,20 @@
 """
-Demostracion de WHCA* fuera de ROS: escenarios chicos, animados
+Demostracion de WHCA* fuera de ROS sobre instancias pequenas.
 
     python3 whca_demo.py
 
-Se abre una ventana: a la izquierda el escenario animandose, a la
-derecha que esta probando y por que. Con los botones se cambia de
+Abre una ventana con el escenario animado a la izquierda y su
+descripcion, parametros y resultado a la derecha. Los botones cambian de
 escenario.
 
-No necesita Gazebo ni colcon ni source. Toda la capa de planeacion solo
-importa math, heapq e itertools, y lo unico con forma de ROS que toca es
-un OccupancyGrid, del que lee seis atributos: por eso la clase Rejilla
-de aqui abajo basta para correr el planificador completo.
+No requiere Gazebo, colcon ni source. La capa de planeacion solo importa
+math, heapq e itertools, y del OccupancyGrid lee seis atributos, de modo
+que la clase Rejilla de este archivo basta para ejecutar el planificador
+completo.
 """
 
+import filecmp
+import glob
 import os
 import sys
 import textwrap
@@ -22,9 +24,10 @@ from matplotlib.animation import FuncAnimation
 from matplotlib.patches import Circle, Rectangle
 from matplotlib.widgets import Button
 
-sys.path.insert(0, os.path.join(
+PAQUETE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
-    '..', 'ros2_ws', 'src', 'navigation', 'swarm_mapf'))
+    '..', 'ros2_ws', 'src', 'navigation', 'swarm_mapf')
+sys.path.insert(0, PAQUETE)
 
 from swarm_mapf.planners import whca          # noqa: E402
 
@@ -40,6 +43,41 @@ TINTA = '#0b0b0b'
 TINTA_2 = '#52514e'
 
 
+def revisar_instalacion():
+    """
+    Avisa si la copia que ejecuta ROS difiere de la fuente que usa esto.
+
+    colcon build copia los archivos a install/, asi que editar la fuente
+    sin reconstruir deja dos versiones distintas: este demo prueba una y
+    el robot ejecuta la otra.
+    """
+    destino = glob.glob(os.path.join(
+        PAQUETE, '..', '..', '..', 'install', 'swarm_mapf', 'lib',
+        'python3*', 'site-packages', 'swarm_mapf'))
+    if not destino:
+        return
+
+    fuente = os.path.join(PAQUETE, 'swarm_mapf')
+    distintos = []
+    for carpeta, _, archivos in os.walk(fuente):
+        for archivo in archivos:
+            if not archivo.endswith('.py'):
+                continue
+            ruta = os.path.join(carpeta, archivo)
+            relativa = os.path.relpath(ruta, fuente)
+            copia = os.path.join(destino[0], relativa)
+            if os.path.exists(copia) and not filecmp.cmp(ruta, copia,
+                                                         shallow=False):
+                distintos.append(relativa)
+
+    if distintos:
+        print('Aviso: la copia instalada no coincide con la fuente.')
+        print('Este demo usa la fuente; el robot usaria la copia.')
+        for relativa in sorted(distintos):
+            print('   ', relativa)
+        print('Para igualarlas: colcon build --packages-select swarm_mapf')
+
+
 # ─── Los escenarios ──────────────────────────────────────────────────
 #
 #   #  muro          A  donde empieza el robot A
@@ -51,14 +89,13 @@ TINTA_2 = '#52514e'
 ESCENARIOS = [
     {
         'titulo': 'Pasillo de una via',
-        'prueba': 'WHCA* es incompleto: aqui tiene que fallar',
+        'prueba': 'instancia sin solucion',
         'porque':
-            'Dos robots quieren intercambiar sus lugares en un pasillo '
-            'donde no cabe mas que uno, y no hay ningun rincon donde '
-            'hacerse a un lado.\n\n'
-            'No existe solucion, asi que lo correcto es que el '
-            'planificador conteste que no hay ruta. Fallar aqui no es un '
-            'error: es la propiedad que CBS deberia mejorar.',
+            'Dos robots intercambian posiciones en un pasillo de una '
+            'celda de ancho. No hay celdas laterales.\n\n'
+            'Ninguna secuencia de movimientos resuelve la instancia, por '
+            'lo que el planificador debe reportar que no existe ruta. El '
+            'resultado esperado es que falle.',
         'mapa': """
 #########
 #A...B.a#
@@ -68,18 +105,19 @@ ESCENARIOS = [
     },
     {
         'titulo': 'El rincon, lejos',
-        'prueba': 'hay solucion y WHCA* no la encuentra',
+        'prueba': 'incompletitud con solucion existente',
         'porque':
-            'El mismo pasillo, ahora con un rincon donde caber. Pero esta '
-            'del lado de A, y B no alcanza a llegar antes de que A le '
-            'cierre el paso.\n\n'
-            'La solucion existe: si A se quedara quieto unos pasos, B '
-            'llegaria al rincon, A pasaria y B saldria. WHCA* no la '
-            'encuentra porque planifica por prioridad, y el primero '
-            'planifica como si estuviera solo: nunca espera por nadie.\n\n'
-            'Este es el limite del metodo, no una falla. Es justo donde '
-            'CBS gana, porque CBS si puede obligar a esperar al de '
-            'arriba.',
+            'El pasillo tiene una celda lateral, ubicada del lado de A. B '
+            'necesita cuatro pasos para alcanzarla y A la rebasa en el '
+            'primero.\n\n'
+            'Existe una solucion: si A permaneciera detenido mientras B '
+            'entra a la celda lateral, A podria recorrer el pasillo y B '
+            'salir despues. WHCA* no la encuentra porque planifica en '
+            'orden de prioridad y el primer robot planifica sin '
+            'restricciones, de modo que nunca espera.\n\n'
+            'La limitacion es propia de la planificacion por prioridades. '
+            'CBS no la tiene, porque puede imponer restricciones tambien '
+            'al robot de mayor prioridad.',
         'mapa': """
 #########
 #A...B.a#
@@ -90,19 +128,20 @@ ESCENARIOS = [
     },
     {
         'titulo': 'El rincon, cerca',
-        'prueba': 'una sola celda decide si resuelve o se rinde',
+        'prueba': 'efecto de la posicion de la celda lateral',
         'porque':
-            'El mismo pasillo, con el rincon justo al lado de B.\n\n'
-            'Ahora B si alcanza a meterse, se queda ahi mientras A pasa '
-            'de largo, y sale detras de el. Lo unico que cambio respecto '
-            'al escenario anterior es donde esta el rincon.\n\n'
-            'Fijate en el momento en que B se detiene: eso es ceder el '
-            'paso, y es posible porque esperar es un movimiento mas de la '
-            'busqueda, igual que avanzar.\n\n'
-            'B da un paso de mas antes de meterse al rincon. No es un '
-            'error: su llegada depende de cuando A libere el pasillo, '
-            'asi que varias rutas cuestan exactamente lo mismo y la '
-            'busqueda toma una cualquiera de ellas.',
+            'La misma instancia con la celda lateral junto a B.\n\n'
+            'B entra en ella, permanece mientras A recorre el pasillo y '
+            'sale cuando A libero su posicion. La unica diferencia '
+            'respecto a la instancia anterior es la ubicacion de esa '
+            'celda.\n\n'
+            'La espera es una accion de la busqueda igual que avanzar: el '
+            'estado incluye el paso de tiempo, por lo que permanecer en '
+            'una celda es una transicion valida.\n\n'
+            'B realiza un movimiento adicional antes de entrar. Su tiempo '
+            'de llegada depende de cuando A libere el pasillo, por lo que '
+            'varias rutas tienen el mismo costo y la busqueda devuelve '
+            'una cualquiera de ellas.',
         'mapa': """
 #########
 #A...B.a#
@@ -113,15 +152,16 @@ ESCENARIOS = [
     },
     {
         'titulo': 'Cuello de botella',
-        'prueba': 'la espera: tres robots y un solo paso',
+        'prueba': 'esperas por contencion en un paso unico',
         'porque':
-            'Dos salas unidas por un hueco de una sola celda. Los tres '
-            'robots tienen que cruzar por ahi.\n\n'
-            'A y C estan a la misma distancia del hueco, asi que lo '
-            'necesitan en el mismo paso y no hay desvio posible: uno de '
-            'los dos tiene que esperar su turno. Se forma una fila.\n\n'
-            'Este es el caso que los escenarios reales nunca producen, '
-            'porque alla la geometria escalona a los robots sola.',
+            'Dos salas comunicadas por una sola celda. Los tres robots '
+            'deben cruzarla.\n\n'
+            'A y C estan a la misma distancia de esa celda y la requieren '
+            'en el mismo paso. No hay ruta alternativa, de modo que el de '
+            'menor prioridad espera su turno.\n\n'
+            'En los escenarios de simulacion esta situacion no se '
+            'presenta: las distancias a los cuellos difieren y los robots '
+            'quedan escalonados sin necesidad de esperar.',
         'mapa': """
 #############
 #A....#....a#
@@ -132,12 +172,12 @@ ESCENARIOS = [
     },
     {
         'titulo': 'Cuello de botella, prioridad al reves',
-        'prueba': 'el orden no es cosmetico: cambia la solucion',
+        'prueba': 'efecto del orden de prioridad',
         'porque':
-            'El mismo cuello de botella, planificando en orden inverso.\n\n'
-            'Ahora espera otro robot y las rutas no son las mismas. La '
-            'prioridad es la unica perilla que tiene WHCA*, y aqui se ve '
-            'que decide quien gana y cuanto le cuesta a cada quien.',
+            'La misma instancia planificada en orden inverso.\n\n'
+            'El robot que espera es otro y las rutas cambian. El orden de '
+            'prioridad es el unico parametro de WHCA* y determina como se '
+            'reparte el costo entre los robots.',
         'mapa': """
 #############
 #A....#....a#
@@ -149,13 +189,13 @@ ESCENARIOS = [
     },
     {
         'titulo': 'Cruce',
-        'prueba': 'dos trayectorias perpendiculares que coinciden',
+        'prueba': 'contencion fuera de un pasillo',
         'porque':
-            'A cruza de izquierda a derecha y B de arriba abajo. Los dos '
-            'pasan por el centro, y estan a la misma distancia de el.\n\n'
-            'No es un pasillo: hay espacio alrededor. Aun asi, la celda '
-            'del centro solo admite a uno a la vez, y el de menor '
-            'prioridad tiene que dejarla pasar antes de entrar.',
+            'A se desplaza en horizontal y B en vertical. Ambos pasan por '
+            'la celda central y estan a la misma distancia de ella.\n\n'
+            'No se trata de un pasillo: hay espacio libre alrededor. Aun '
+            'asi la celda central admite un robot por paso, por lo que el '
+            'de menor prioridad espera a que se libere.',
         'mapa': """
 #########
 ####B####
@@ -168,14 +208,15 @@ ESCENARIOS = [
     },
     {
         'titulo': 'Una meta que tapa el paso',
-        'prueba': 'un robot estacionado sigue ocupando su celda',
+        'prueba': 'reserva de la celda meta',
         'porque':
-            'La meta de A es el hueco mismo. A llega, se queda ahi para '
-            'siempre, y B se queda sin ruta porque no hay otro paso.\n\n'
-            'Que falle es la prueba de que la tabla sostiene la celda de '
-            'un robot que ya llego. Si la soltara, B planificaria encima '
-            'de un robot estacionado y el choque apareceria hasta '
-            'Gazebo.',
+            'La meta de A es la celda del paso unico. A llega y permanece '
+            'ahi.\n\n'
+            'B no tiene otra ruta, de modo que la instancia no tiene '
+            'solucion. El resultado verifica que la tabla sostiene la '
+            'celda de un robot que ya llego hasta el limite de la '
+            'busqueda. Si la liberara, B planificaria sobre un robot '
+            'detenido.',
         'mapa': """
 #########
 #A..#...#
@@ -371,33 +412,50 @@ class Demo:
         ax.clear()
         ax.axis('off')
 
+        info = self.rejilla.info
         ax.text(0, 1.0, 'Escenario %d de %d' % (self.indice + 1,
                                                 len(ESCENARIOS)),
                 va='top', color=TINTA_2, fontsize=9)
         ax.text(0, 0.95, self.escenario['titulo'], va='top', color=TINTA,
                 fontsize=15, fontweight='bold')
-        ax.text(0, 0.87, _envolver('Que prueba:  ' + self.escenario['prueba']),
+        ax.text(0, 0.88, _envolver('Que prueba:  ' + self.escenario['prueba']),
                 va='top', color=TINTA, fontsize=10)
-        ax.text(0, 0.78, _envolver(self.escenario['porque']), va='top',
+        ax.text(0, 0.80, _envolver(self.escenario['porque']), va='top',
                 color=TINTA_2, fontsize=10, linespacing=1.6)
 
+        parametros = [
+            ('planificador', 'WHCA*'),
+            ('ventana w', '%d pasos' % VENTANA),
+            ('tamano de celda', '%.1f m' % CELDA),
+            ('rejilla', '%d x %d celdas' % (info.width, info.height)),
+            ('robots', '%d' % len(self.arranques)),
+            ('prioridad', ', '.join(self.arranques)),
+        ]
+        ax.text(0, 0.30, 'Parametros', va='top', color=TINTA, fontsize=10,
+                fontweight='bold')
+        ax.text(0, 0.25, '\n'.join('%-15s %s' % par for par in parametros),
+                va='top', color=TINTA_2, fontsize=9, linespacing=1.7,
+                family='monospace')
+
         if self.rutas is None:
-            resultado = 'Resultado:  sin solucion, como debe ser'
+            resultado = 'sin solucion'
         else:
-            lineas = []
+            filas = []
             for nombre, ruta in self.rutas.items():
                 esperas = sum(1 for a, b in zip(ruta, ruta[1:]) if a == b)
-                lineas.append('%s:  %d pasos, %d esperas'
-                              % (nombre, len(ruta) - 1, esperas))
-            resultado = 'Resultado\n' + '\n'.join(lineas)
-        ax.text(0, 0.26, resultado, va='top', color=TINTA, fontsize=10,
-                linespacing=1.8, fontweight='bold')
+                filas.append('%-6s %2d pasos, %d esperas'
+                             % (nombre, len(ruta) - 1, esperas))
+            total = sum(len(r) - 1 for r in self.rutas.values())
+            filas.append('%-6s %2d pasos' % ('suma', total))
+            resultado = '\n'.join(filas)
 
-        orden = ', '.join(self.arranques)
-        ax.text(0, 0.03, 'Prioridad: %s  (el primero nunca cede)' % orden,
-                va='top', color=TINTA_2, fontsize=9)
+        ax.text(0.55, 0.30, 'Resultado', va='top', color=TINTA, fontsize=10,
+                fontweight='bold')
+        ax.text(0.55, 0.25, resultado, va='top', color=TINTA_2, fontsize=9,
+                linespacing=1.7, family='monospace')
 
 
 if __name__ == '__main__':
+    revisar_instalacion()
     Demo()
     plt.show()
