@@ -20,9 +20,8 @@ import sys
 import textwrap
 
 import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation
 from matplotlib.patches import Circle, Rectangle
-from matplotlib.widgets import Button
+from matplotlib.widgets import Button, Slider
 
 PAQUETE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
@@ -270,17 +269,14 @@ def leer(mapa):
     return Rejilla(ancho, alto, datos), arranques, metas
 
 
-def planificar(escenario):
-    """Arma el escenario y lo resuelve. Devuelve None si no hay ruta."""
+def armar(escenario):
+    """Construye el escenario. No lo planifica."""
     rejilla, arranques, metas = leer(escenario['mapa'])
     metas.update(escenario.get('metas', {}))
 
     # El orden de este diccionario es la prioridad: WHCA* la lee de ahi
     orden = escenario.get('prioridad') or sorted(arranques)
-    arranques = {nombre: arranques[nombre] for nombre in orden}
-
-    rutas = whca.plan(arranques, metas, rejilla, CELDA, window=VENTANA)
-    return rejilla, arranques, metas, rutas
+    return rejilla, {n: arranques[n] for n in orden}, metas
 
 
 # ─── La ventana ──────────────────────────────────────────────────────
@@ -292,51 +288,136 @@ def _envolver(texto, ancho=62):
 
 
 class Demo:
-    """Dibuja un escenario a la vez y lo anima en bucle."""
-
-    PAUSA = 8          # cuadros quieto al final, antes de repetir
+    """Un escenario a la vez: se planea y luego se recorre paso a paso."""
 
     def __init__(self):
-        self.fig = plt.figure(figsize=(15, 7), facecolor=FONDO)
+        self.fig = plt.figure(figsize=(15, 7.6), facecolor=FONDO)
         self.fig.canvas.manager.set_window_title('WHCA* paso a paso')
 
-        self.mapa_ax = self.fig.add_axes([0.03, 0.12, 0.56, 0.80])
-        self.texto_ax = self.fig.add_axes([0.62, 0.12, 0.36, 0.80])
+        self.mapa_ax = self.fig.add_axes([0.03, 0.18, 0.56, 0.76])
+        self.texto_ax = self.fig.add_axes([0.62, 0.18, 0.36, 0.76])
         self.texto_ax.axis('off')
 
-        anterior = self.fig.add_axes([0.03, 0.03, 0.10, 0.055])
-        siguiente = self.fig.add_axes([0.14, 0.03, 0.10, 0.055])
-        self.b_anterior = Button(anterior, 'anterior', color=FONDO)
-        self.b_siguiente = Button(siguiente, 'siguiente', color=FONDO)
-        self.b_anterior.on_clicked(lambda _: self.mover(-1))
-        self.b_siguiente.on_clicked(lambda _: self.mover(+1))
+        self.botones = []
+        self.b_anterior = self._boton(0.03, 'escenario -', lambda: self.mover(-1))
+        self.b_siguiente = self._boton(0.14, 'escenario +', lambda: self.mover(+1))
+        self.b_planear = self._boton(0.27, 'planear', self.planear)
+        self.b_atras = self._boton(0.39, 'paso -', lambda: self.ir(self.paso - 1))
+        self.b_adelante = self._boton(0.50, 'paso +', lambda: self.ir(self.paso + 1))
+        self.b_reproducir = self._boton(0.61, 'reproducir', self.reproducir)
+
+        barra = self.fig.add_axes([0.72, 0.055, 0.25, 0.03])
+        self.barra = Slider(barra, 'paso', 0, 1, valinit=0, valstep=1,
+                            color=TINTA_2, initcolor='none')
+        self.barra.on_changed(lambda valor: self.ir(int(valor), False))
+
+        self.cronometro = self.fig.canvas.new_timer(interval=600)
+        self.cronometro.add_callback(self._tic)
+        self.corriendo = False
 
         self.indice = 0
         self.cargar()
-        self.animacion = FuncAnimation(
-            self.fig, self.cuadro, interval=700,
-            cache_frame_data=False, blit=False)
 
-    # ── escenario actual ──
+    def _boton(self, x, texto, accion):
+        eje = self.fig.add_axes([x, 0.04, 0.10, 0.06])
+        boton = Button(eje, texto, color=FONDO, hovercolor='#eeece6')
+        boton.label.set_fontsize(9)
+        boton.on_clicked(lambda _: accion())
+        self.botones.append(boton)
+        return boton
+
+    # ── escenario ──
 
     def mover(self, paso):
         self.indice = (self.indice + paso) % len(ESCENARIOS)
         self.cargar()
 
     def cargar(self):
+        """Prepara el escenario sin planificarlo todavia."""
+        self.pausar()
         self.escenario = ESCENARIOS[self.indice]
-        (self.rejilla, self.arranques,
-         self.metas, self.rutas) = planificar(self.escenario)
-
+        self.rejilla, self.arranques, self.metas = armar(self.escenario)
+        self.rutas = None
+        self.planeado = False
+        self.largo = 0
+        self.paso = 0
         self.color = {n: COLORES[i % len(COLORES)]
                       for i, n in enumerate(sorted(self.arranques))}
+        self._ajustar_barra()
+        self.dibujar()
+        self.explicar()
+
+    def planear(self):
+        """Corre el planificador y deja la solucion lista para recorrer."""
+        self.pausar()
+        self.rutas = whca.plan(self.arranques, self.metas, self.rejilla,
+                               CELDA, window=VENTANA)
+        self.planeado = True
         self.largo = (0 if self.rutas is None
                       else max(len(r) for r in self.rutas.values()) - 1)
         self.paso = 0
+
+        if self.rutas is None:
+            print('%s: sin solucion' % self.escenario['titulo'])
+        else:
+            print('%s:' % self.escenario['titulo'])
+            for nombre, ruta in self.rutas.items():
+                print('   %s  %s' % (nombre, ' '.join('(%d,%d)' % c
+                                                      for c in ruta)))
+
+        self._ajustar_barra()
+        self.dibujar()
         self.explicar()
 
+    # ── recorrer ──
+
+    def _ajustar_barra(self):
+        self.barra.valmax = max(self.largo, 1)
+        self.barra.ax.set_xlim(0, max(self.largo, 1))
+        self.barra.set_val(self.paso)
+
+    def ir(self, paso, mover_barra=True):
+        if not self.planeado or self.rutas is None:
+            return
+        paso = max(0, min(paso, self.largo))
+        if paso == self.paso:
+            return
+        self.paso = paso
+        if mover_barra:
+            self.barra.set_val(paso)
+        self.dibujar()
+        self.explicar()
+        self.fig.canvas.draw_idle()
+
+    def reproducir(self):
+        if self.rutas is None:
+            return
+        if self.corriendo:
+            self.pausar()
+        else:
+            if self.paso >= self.largo:
+                self.ir(0)
+            self.corriendo = True
+            self.b_reproducir.label.set_text('pausa')
+            self.cronometro.start()
+
+    def pausar(self):
+        if getattr(self, 'corriendo', False):
+            self.cronometro.stop()
+        self.corriendo = False
+        if hasattr(self, 'b_reproducir'):
+            self.b_reproducir.label.set_text('reproducir')
+
+    def _tic(self):
+        if self.paso >= self.largo:
+            self.pausar()
+            self.fig.canvas.draw_idle()
+            return
+        self.ir(self.paso + 1)
+
+    # ── estado de un robot ──
+
     def donde(self, nombre, paso):
-        """Celda que ocupa un robot en un paso, ya estacionado o no."""
         ruta = (self.rutas or {}).get(nombre)
         if not ruta:
             return self.arranques[nombre]
@@ -348,14 +429,7 @@ class Demo:
 
     # ── dibujo ──
 
-    def cuadro(self, _):
-        self.dibujar()
-        self.paso += 1
-        if self.paso > self.largo + self.PAUSA:
-            self.paso = 0
-
     def dibujar(self):
-        paso = min(self.paso, self.largo)
         ax = self.mapa_ax
         ax.clear()
         ax.set_facecolor(FONDO)
@@ -378,26 +452,31 @@ class Demo:
 
             ruta = (self.rutas or {}).get(nombre)
             if ruta:
-                hasta = ruta[:paso + 1]
+                # La ruta completa en claro, y en firme lo ya recorrido
+                ax.plot([c[0] + 0.5 for c in ruta], [c[1] + 0.5 for c in ruta],
+                        color=color, linewidth=1.5, alpha=0.15, zorder=2)
+                hasta = ruta[:self.paso + 1]
                 ax.plot([c[0] + 0.5 for c in hasta],
                         [c[1] + 0.5 for c in hasta],
-                        color=color, linewidth=2.0, alpha=0.35, zorder=4)
+                        color=color, linewidth=2.0, alpha=0.40, zorder=4)
 
-            i, j = self.donde(nombre, paso)
+            i, j = self.donde(nombre, self.paso)
             ax.add_patch(Circle((i + 0.5, j + 0.5), 0.34, facecolor=color,
                                 edgecolor=FONDO, linewidth=2.0, zorder=5))
             ax.text(i + 0.5, j + 0.5, nombre, ha='center', va='center',
                     color='white', fontsize=12, fontweight='bold', zorder=6)
-            if self.espera(nombre, paso):
+            if self.espera(nombre, self.paso):
                 ax.text(i + 0.5, j + 1.02, 'espera', ha='center', va='bottom',
                         color=color, fontsize=9, fontweight='bold', zorder=6)
 
-        if self.rutas is None:
-            titulo = '%s  —  sin solucion' % self.escenario['titulo']
+        if not self.planeado:
+            estado = 'sin planear'
+        elif self.rutas is None:
+            estado = 'sin solucion'
         else:
-            titulo = '%s  —  paso %d de %d' % (self.escenario['titulo'],
-                                               paso, self.largo)
-        ax.set_title(titulo, color=TINTA, fontsize=13, loc='left', pad=12)
+            estado = 'paso %d de %d' % (self.paso, self.largo)
+        ax.set_title('%s  —  %s' % (self.escenario['titulo'], estado),
+                     color=TINTA, fontsize=13, loc='left', pad=12)
 
         ax.set_xlim(0, info.width)
         ax.set_ylim(0, info.height)
@@ -437,7 +516,9 @@ class Demo:
                 va='top', color=TINTA_2, fontsize=9, linespacing=1.7,
                 family='monospace')
 
-        if self.rutas is None:
+        if not self.planeado:
+            resultado = 'presiona planear'
+        elif self.rutas is None:
             resultado = 'sin solucion'
         else:
             filas = []
@@ -445,8 +526,15 @@ class Demo:
                 esperas = sum(1 for a, b in zip(ruta, ruta[1:]) if a == b)
                 filas.append('%-6s %2d pasos, %d esperas'
                              % (nombre, len(ruta) - 1, esperas))
-            total = sum(len(r) - 1 for r in self.rutas.values())
-            filas.append('%-6s %2d pasos' % ('suma', total))
+            filas.append('%-6s %2d pasos'
+                         % ('suma', sum(len(r) - 1
+                                        for r in self.rutas.values())))
+            filas.append('')
+            filas.append('paso %d' % self.paso)
+            for nombre in self.rutas:
+                i, j = self.donde(nombre, self.paso)
+                marca = '  espera' if self.espera(nombre, self.paso) else ''
+                filas.append('%-6s (%d, %d)%s' % (nombre, i, j, marca))
             resultado = '\n'.join(filas)
 
         ax.text(0.55, 0.30, 'Resultado', va='top', color=TINTA, fontsize=10,
