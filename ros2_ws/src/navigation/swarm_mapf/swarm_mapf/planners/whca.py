@@ -68,10 +68,16 @@ def plan(starts, goals, occupancy_grid, cell_size, window=WINDOW):
         # time per call; worth measuring both before writing chapter 6
         claimed = path[:window + 1]
 
-        # hold_until matters only for a robot that arrives inside the
-        # window: it parks on its goal and has to keep blocking it. One
-        # that was cut by the window is still moving, and for it
-        # arrival already equals window, so nothing extra is written
-        table.reserve(robot, claimed, hold_until=window)
+        # A robot that reaches its goal inside the window parks there and
+        # keeps blocking it, so its cell is held past every step the
+        # search can reach. Holding it only to the window instead would
+        # make it evaporate at the horizon, and the robots that plan
+        # later would route straight over a robot that is still standing
+        # there. One cut off by the window is still moving and holds
+        # nothing
+        arrived = len(path) - 1 <= window
+        table.reserve(robot, claimed,
+                      hold_until=space_time_astar.MAX_STEPS if arrived
+                      else None)
 
     return paths
